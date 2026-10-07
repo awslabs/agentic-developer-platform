@@ -565,6 +565,13 @@ BY_ID = {case.id: case for case in (*CASES, LOGIN_CHECKPOINT, *DIAGNOSTICS)}
 
 def suite_cases(suite):
     """Resolve a suite name to its ordered cases. 'full' is every case."""
+    if suite.startswith("case:"):
+        case_id = suite.removeprefix("case:")
+        if case_id not in BY_ID:
+            raise ValueError(f"Unknown CLI case {case_id!r}")
+        # Every focused journey still uses the clean-host install/auth stages.
+        wanted = {"E01", "C01", case_id}
+        return tuple(case for case in BY_ID.values() if case.id in wanted)
     if suite not in SUITES:
         raise ValueError(f"Unknown suite {suite!r}; choose from {', '.join(SUITES)}")
     if suite == "full":

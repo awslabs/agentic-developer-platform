@@ -1,5 +1,6 @@
 name: Live explanation browser tests
 on:
+  workflow_call: {}
   pull_request:
     branches: [main]
     paths:
@@ -17,7 +18,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: explanations-browser-${{ github.ref }}
+  group: ${{ github.workflow }}-explanations-browser-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   browser:

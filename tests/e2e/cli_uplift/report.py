@@ -19,6 +19,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
 from . import cases
+from tests.regression.catalog import cli_tags
 
 # Key names whose VALUES must never be published. `external.?id` matters
 # specifically: an ExternalId is the second half of an assume-role credential.
@@ -128,6 +129,7 @@ def build(
         rows.append(
             {
                 "id": case_id,
+                "tags": cli_tags(case_id),
                 "owner": case.owner,
                 "suite": case.suite,
                 "summary": case.summary,
@@ -189,6 +191,14 @@ def junit(matrix, evaluation_id):
         name = quoteattr(f"{case_id} ({case.owner}) {case.summary}")
         detail = json.dumps(redact(entry.get("detail") or {}), sort_keys=True)
         lines.append(f'  <testcase classname="cli-uplift.{case.suite}" name={name}>')
+        lines.append("    <properties>")
+        for field, identities in cli_tags(case_id).items():
+            key = "adp_" + field.removesuffix("_ids") + "_id"
+            for identity in identities:
+                lines.append(
+                    f"      <property name={quoteattr(key)} value={quoteattr(identity)}/>"
+                )
+        lines.append("    </properties>")
         if entry["status"] == cases.FAILED:
             lines.append(
                 f'    <failure message="case failed">{escape(detail)}</failure>'

@@ -1,6 +1,7 @@
 name: Platform Upgrade Tests
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'platform/scripts/deploy-all.sh'

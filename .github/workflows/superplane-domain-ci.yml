@@ -38,6 +38,7 @@ name: Superplane Domain CI
 # lifecycle and worker-image changes do not run unrelated API or Go suites.
 
 on:
+  workflow_call: {}
   pull_request:
     # Pinned to main, matching all 22 sibling `pull_request` lanes. Without this the lane
     # also fires for PRs targeting arbitrary branches (#5198 review).
@@ -56,7 +57,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: superplane-domain-ci-${{ github.ref }}-${{ inputs.controller_only || false }}
+  group: ${{ github.workflow }}-superplane-domain-ci-${{ github.ref }}-${{ inputs.controller_only || false }}
   cancel-in-progress: true
 
 jobs:

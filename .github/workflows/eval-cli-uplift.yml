@@ -85,6 +85,9 @@ on:
         default: none
   workflow_call:
     outputs:
+      cleanup_ok:
+        description: True only after the recovery job succeeds
+        value: ${{ jobs.recover.outputs.cleanup_ok }}
       revision:
         description: 'The exact deployed revision pinned immediately before EC2 evaluation'
         value: ${{ jobs.evaluate.outputs.revision }}
@@ -609,6 +612,8 @@ jobs:
           retention-days: 30
 
   recover:
+    outputs:
+      cleanup_ok: ${{ steps.cleaned.outputs.cleanup_ok }}
     name: Recovery sweep (this run, plus anything expired)
     # `always()` is not enough on its own — a cancelled run or a lost runner
     # never reaches the evaluate job's cleanup steps at all. This job depends on
@@ -915,3 +920,7 @@ jobs:
             echo
             echo "GitHub Apps are never deleted by automation (a reused fixture is preserved by design; a created one needs its owner). If the report lists an outstanding \`github_app\`, remove it manually."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish verified cleanup outcome
+        id: cleaned
+        run: echo 'cleanup_ok=true' >> "$GITHUB_OUTPUT"

@@ -1,6 +1,12 @@
 name: Gateway CI
 
 on:
+  workflow_call:
+    inputs:
+      offline_only:
+        type: boolean
+        required: false
+        default: false
   # Reviewed source can be validated without removing [skip ci] from commits.
   # This runs the existing tests and no-push smoke build, never a deployment.
   workflow_dispatch:
@@ -170,7 +176,7 @@ on:
       - main
 
 concurrency:
-  group: gateway-ci-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-gateway-ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -469,6 +475,7 @@ jobs:
         run: npx tsc --noEmit
 
   build:
+    if: ${{ !inputs.offline_only }}
     name: Build Container
     runs-on: arc-runner-org
     # Depends on test-shard directly, NOT on the `test` aggregator. The

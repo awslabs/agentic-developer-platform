@@ -1,24 +1,24 @@
 name: E2E Chat Playwright Regression Suite
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'modules/gateway/frontend/**'
-      - 'modules/agent-factory/agent/**'
-      - 'modules/agent-factory/lambdas/**'
-      - 'tests/e2e/chat/**'
-      - '.github/workflows/e2e-chat-playwright.yml'
-      # Documentation-only changes do not start this workflow.
-      - '!docs/**'
-      - '!**/docs/**'
-      - '!**/README*'
-      - '!**/CHANGELOG*'
-      - '!**/CONTRIBUTING*'
-      - '!**/*.rst'
-  schedule:
-    # Nightly at 03:00 UTC
-    - cron: '0 3 * * *'
+  workflow_call:
+    inputs:
+      modules:
+        type: string
+        required: false
+        default: ''
+      cloudfront_url:
+        type: string
+        required: false
+        default: ''
+      smoke:
+        type: boolean
+        required: false
+        default: false
+      require_interactions:
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
     inputs:
       cloudfront_url:
@@ -39,13 +39,23 @@ env:
   # overrides it for one-off runs against another environment.
   E2E_CLOUDFRONT_URL: ''
 
+concurrency:
+  group: cli-live-eval-dev
+  cancel-in-progress: false
+
 jobs:
   e2e-chat:
     name: Playwright Chat E2E
-    environment: adp-browser-checks-${{ github.event.inputs.environment || 'dev' }}
+    environment: adp-browser-checks-dev
     runs-on: arc-runner-org
     timeout-minutes: 30
+    env:
+      PYTHONPATH: ${{ github.workspace }}/.github/scripts:${{ github.workspace }}
+      REGRESSION_MODULES: ${{ inputs.modules }}
+      REGRESSION_KIND: ${{ inputs.modules != '' && 'E2E' || 'all' }}
+      REGRESSION_INVENTORY: ${{ github.workspace }}/test-results/chat-inventory.json
 
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -64,7 +74,7 @@ jobs:
 
       - name: Resolve dashboard URL
         env:
-          INPUT_CLOUDFRONT_URL: ${{ github.event.inputs.cloudfront_url }}
+          INPUT_CLOUDFRONT_URL: ${{ inputs.cloudfront_url }}
         run: bash .github/scripts/resolve-dashboard-url.sh
 
       - name: Set up Python 3.12
@@ -91,19 +101,42 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p test-results
-          python -m pytest tests/e2e/chat/ \
+          ARGS=()
+          if [ "$SMOKE_ONLY" = true ]; then
+            ARGS+=(-k 'TestLoginRoundTrip or TestSessionRestoration')
+          fi
+          python -m pytest tests/e2e/chat/ "${ARGS[@]}" -p regression_pytest \
             -v \
+            --junitxml=test-results/chat.xml \
             --tb=short \
             --html=test-results/e2e-chat-report.html \
             --self-contained-html \
             --timeout=300 \
-            -x \
             2>&1 | tee test-results/e2e-chat-output.txt
         env:
+          SMOKE_ONLY: ${{ inputs.smoke || false }}
           E2E_CHAT_ENABLED: '1'
           E2E_CLOUDFRONT_URL: ${{ env.E2E_CLOUDFRONT_URL }}
           AWS_REGION: us-east-1
           ENVIRONMENT: dev
+
+      - name: Require enabled conversation coverage for regression
+        if: ${{ always() && inputs.require_interactions }}
+        env:
+          CHAT_MODE: ${{ env.E2E_CHAT_EXPECTED_FLAG }}
+        run: |
+          if [ "$CHAT_MODE" != on ]; then
+            echo "::error::Chat interaction coverage is BLOCKED: use an approved target with chat enabled."
+            exit 1
+          fi
+
+      - name: Verify complete scenario evidence
+        if: always()
+        run: >-
+          python .github/scripts/regression_report.py junit
+          --suite chat --junit test-results/chat.xml
+          --inventory test-results/chat-inventory.json
+          --output test-results/chat-result.json
 
       - name: Upload test results
         if: always()

@@ -1,5 +1,6 @@
 name: Shared AgentCore tools CI
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'modules/tools/adp_tools/**'
@@ -21,7 +22,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: shared-tools-ci-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-shared-tools-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   verify:

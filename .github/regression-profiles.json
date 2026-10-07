@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "daily": {
+    "cli_scope": "nightly"
+  },
+  "weekly": {
+    "cli_scope": "nightly,capability-contrast,hosted-chat,vault-lifecycle,knowledge-lifecycle,machine-lifecycle,budget-lifecycle,hierarchy-lifecycle"
+  }
+}

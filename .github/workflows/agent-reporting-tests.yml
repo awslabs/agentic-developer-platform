@@ -1,6 +1,7 @@
 name: Agent Reporting Tests
 
 on:
+  workflow_call: {}
   pull_request:
     branches: [main]
     paths:
@@ -31,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: agent-reporting-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-agent-reporting-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:

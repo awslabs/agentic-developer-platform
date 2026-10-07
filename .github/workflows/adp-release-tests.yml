@@ -1,5 +1,6 @@
 name: ADP Release Tests
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - 'platform/scripts/release/**'

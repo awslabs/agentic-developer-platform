@@ -19,6 +19,7 @@ name: Provenance Contract Tests
 # builder test fails here; change the fixture and all three fail until they agree.
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       # The shared contract artifact itself
@@ -63,7 +64,7 @@ on:
       - main
 
 concurrency:
-  group: provenance-contract-tests-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-provenance-contract-tests-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:

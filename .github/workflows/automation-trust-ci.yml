@@ -1,5 +1,6 @@
 name: Automation trust contracts
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - .github/workflows/**
@@ -22,7 +23,7 @@ on:
       - '!**/*.rst'
   workflow_dispatch:
 concurrency:
-  group: automation-trust-${{ github.ref }}
+  group: ${{ github.workflow }}-automation-trust-${{ github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read

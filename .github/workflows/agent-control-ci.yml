@@ -29,6 +29,7 @@ name: Agent Control CI
 # than the thing it verifies.
 
 on:
+  workflow_call: {}
   pull_request:
     paths:
       - '.github/actions/upload-ci-evidence-s3/**'
@@ -285,7 +286,7 @@ concurrency:
   # The dispatched SHA is part of the group so two manual runs against different
   # revisions do not cancel each other: on a workflow_dispatch `github.sha` is the
   # workflow ref, which would be identical for both.
-  group: agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || github.sha }}
+  group: ${{ github.workflow }}-agent-control-ci-${{ github.event.pull_request.number || inputs.source_sha || github.sha }}
   cancel-in-progress: true
 
 permissions:

@@ -1,0 +1,95 @@
+name: ADP Deploy Check
+'on':
+  workflow_run:
+    workflows:
+      - Gateway Deploy
+      - Gateway Frontend Deploy
+      - Chat Agent Deploy
+      - Agent Gateway Deploy
+      - Webhook Code Deploy
+      - superplane-k8s-deploy
+      - Agent Context Deploy
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: adp-regression-dev
+  cancel-in-progress: false
+jobs:
+  before:
+    uses: ./.github/workflows/_regression-snapshot.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion
+      == 'success' && github.event.workflow_run.event == 'push')) }}
+    with:
+      expected_revision: ${{ github.event.workflow_run.name == 'Gateway Deploy' && github.event.workflow_run.head_sha || '' }}
+  after:
+    uses: ./.github/workflows/_regression-snapshot.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion
+      == 'success' && github.event.workflow_run.event == 'push')) }}
+    needs:
+      - smoke
+      - chat
+      - browser
+  smoke:
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion
+      == 'success' && github.event.workflow_run.event == 'push')) }}
+    uses: ./.github/workflows/gateway-smoke.yml
+    with:
+      require_token: true
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - before
+  chat:
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion
+      == 'success' && github.event.workflow_run.event == 'push')) }}
+    uses: ./.github/workflows/e2e-chat-playwright.yml
+    permissions:
+      contents: read
+      id-token: write
+    needs: smoke
+    with:
+      smoke: true
+  browser:
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion
+      == 'success' && github.event.workflow_run.event == 'push')) }}
+    uses: ./.github/workflows/e2e-new-ui-playwright.yml
+    permissions:
+      contents: read
+      id-token: write
+    needs: chat
+  summary:
+    if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion
+      == 'success' && github.event.workflow_run.event == 'push')) }}
+    needs:
+      - smoke
+      - chat
+      - browser
+      - before
+      - after
+    runs-on: arc-runner-org
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Combined verdict
+        env:
+          REGRESSION_JOBS: ${{ toJSON(needs) }}
+          REGRESSION_REVISION_BEFORE: ${{ needs.before.outputs.revision }}
+          REGRESSION_REVISION_AFTER: ${{ needs.after.outputs.revision }}
+        run: python .github/scripts/regression_report.py aggregate --required smoke chat browser before after
