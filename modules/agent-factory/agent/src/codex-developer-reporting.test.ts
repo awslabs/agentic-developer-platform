@@ -191,3 +191,31 @@ test('final reviewer closure and reconciled tasks reach the saved transcript', a
   expect(record.closure_report.remaining).toEqual(['Live demo remains with the evaluator.']);
   expect(markdown).toContain('## Closure report');
 });
+
+test('GitHub retains the implementation plan and publishes the full saved closure instead of a generic status', async () => {
+  const reporter = await createCodexDeveloperReporter({ ...context, persona: 'agent-codex-reviewer' });
+  reporter.plan!('Keep conversations available after reconnecting. I will save ordered output and verify replay after a disconnect.');
+  reporter.explanation('Replay now resumes from the last acknowledged event.');
+  reporter.progress!('**▶ Plan `recover` — Keep conversations after disconnects**\n- ☑ `code` A-c1 — Save ordered output\n- ▶ `test` A-t1 — Verify replay',
+    { id: 'board', category: 'plan', state: 'running', plan_scope: 'assignment' });
+  await jest.advanceTimersByTimeAsync(5000);
+  const issueBodies = () => fetchMock.mock.calls.filter(([url, init]) => url.endsWith('/issues/comments/123') && init.method === 'PATCH')
+    .map(([, init]) => JSON.parse(init.body).body as string);
+  const live = issueBodies().at(-1)!;
+  expect(live).toContain('### Implementation plan');
+  expect(live).toContain('I will save ordered output');
+  expect(live.indexOf('Replay now resumes')).toBeLessThan(live.indexOf('### Implementation progress'));
+  expect(live).toContain('- **Keep conversations after disconnects** — In progress');
+  expect(live.indexOf('<details><summary>Detailed tasks and evidence')).toBeLessThan(live.indexOf('A-c1'));
+  reporter.closure!({ summary: 'Conversations now recover after a lost connection. The browser resumes from a saved cursor.',
+    completed: ['Ordered replay passed the reconnect regression test.'], remaining: ['Deployment and real transport verification remain with the evaluator.'],
+    delivery: 'Pull request merged; deployment has not been verified.', reporting_notes: [] });
+  await reporter.finish({ summary: 'Reviewer finished: merged' });
+  const closed = issueBodies().at(-1)!;
+  expect(closed).toContain('Conversations now recover');
+  expect(closed).toContain('Ordered replay passed');
+  expect(closed).toContain('Deployment and real transport verification remain');
+  expect(closed).toContain('deployment has not been verified');
+  expect(closed).not.toContain('Reviewer finished: merged');
+  expect(closed).toContain('Original implementation plan');
+});

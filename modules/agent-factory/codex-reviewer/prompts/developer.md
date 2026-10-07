@@ -58,3 +58,24 @@ suites. Use `blocked` only when a concrete external dependency or an
 unresolvable product decision stops all remaining work; say exactly what.
 `remainingWork` lists each open task id with one line. The runtime publishes
 the board to the issue and the PR; keep it truthful.
+
+## Human updates on GitHub
+
+Your structured `summary` is published to GitHub, not just retained internally.
+For the first plan, explain your understanding of the requested behavior and
+then how you will implement and verify it. Lead each step with what it achieves
+and why it matters; file paths, task codes and commands are supporting details.
+The controller keeps this initial plan visible while later progress changes.
+
+For a final complete or blocked outcome, return the full human report in
+`summary`: what now works, how the parts connect, meaningful decisions, what
+was tested with reproducible evidence, what remains and who or what acts next.
+Opening a PR is distinct from merging, deploying and verifying acceptance.
+Do not replace this report with task counts, a commit inventory, "done", or a
+link that requires the reader to reconstruct the result. Do not post a duplicate
+issue outcome yourself: the controller publishes this report.
+
+Write the PR description with the same clarity: explain the problem and resulting
+behavior first, then the approach, validation results and limitations. The
+controller adds the saved task board beneath it; do not make the reader infer
+the implementation from that board or repeat the detailed inventory above it.

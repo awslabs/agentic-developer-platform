@@ -271,8 +271,14 @@ export function renderTaskBoard(tasks: Task[], options: { working?: string; head
 /** PR body section the controller owns; the model's prose stays untouched.
  * Human-readable only — the machine-readable board lives in the branch file. */
 export function upsertTaskBoardSection(body: string | null | undefined, tasks: Task[], options: { working?: string; status?: string; since?: string } = {}): string {
-  const section = [BOARD_START, renderTaskBoard(tasks, { heading: "### Task board", working: options.working, since: options.since }),
-    options.status ? `\n_${options.status}_` : "", BOARD_END].filter(Boolean).join("\n");
+  const states = { open: "Not started", in_progress: "In progress", blocked: "Blocked", done: "Completed" };
+  const parents = planSteps(tasks, options.working);
+  const section = [BOARD_START,
+    ...(parents.length ? ["### Implementation progress", "", ...parents.map(step =>
+      `- **${step.title}** — ${states[step.status]} (${step.tasks.filter(task => task.status === "done").length}/${step.tasks.length} detailed tasks)`), ""] : []),
+    "<details><summary>Detailed task board and evidence</summary>", "",
+    renderTaskBoard(tasks, { heading: "### Task board", working: options.working, since: options.since }),
+    options.status ? `\n_${options.status}_` : "", "", "</details>", BOARD_END].join("\n");
   const existing = body ?? "";
   const start = existing.indexOf(BOARD_START), end = existing.indexOf(BOARD_END);
   if (start >= 0 && end > start) return `${existing.slice(0, start)}${section}${existing.slice(end + BOARD_END.length)}`;

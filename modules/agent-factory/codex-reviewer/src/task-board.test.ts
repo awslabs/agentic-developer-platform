@@ -219,3 +219,13 @@ test("breakdown warnings name missing criteria, uncovered code and orphan tasks,
   const live = ["AC-01", "AC-02", "AC-03"].map(id => task(`${id}-c1`, "code", "blocked", [], { note: "deployed-target: owner #6937", criterion: id }));
   assert.match(sizeSignal(live) ?? "", /3 criteria need a deployed target/);
 });
+
+test("GitHub PR progress leads with readable outcomes and collapses the detailed board", () => {
+  const planStep = { id: "recover", title: "Keep conversations after disconnects" };
+  const tasks = [task("A-c1", "code", "done", [], { planStep }), task("A-t1", "test", "in_progress", ["A-c1"], { planStep })];
+  const body = upsertTaskBoardSection("Conversations resume from the last saved event.", tasks);
+  assert.match(body, /\*\*Keep conversations after disconnects\*\* — In progress \(1\/2 detailed tasks\)/);
+  assert.ok(body.indexOf('Conversations resume') < body.indexOf('### Implementation progress'));
+  assert.ok(body.indexOf('<details>') < body.indexOf('- ☑ `code` A-c1'));
+  assert.equal(upsertTaskBoardSection(body, tasks), body);
+});

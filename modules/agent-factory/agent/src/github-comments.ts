@@ -110,7 +110,9 @@ export class LiveStatusComment {
   private runStartTime: number;
   private latestMessage = '';
   private latestExplanation = '';
+  private implementationPlan = '';
   private taskChecklist = '';
+  private taskPlanProgress = '';
   private explanationAt = '';
   private activityLog: string[] = [];
   private static readonly MAX_ACTIVITY_LINES = 10;
@@ -203,6 +205,9 @@ export class LiveStatusComment {
       /TOKEN|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_KEY|API_KEY/.test(key) && value && value.length >= 8 && text.includes(value))) {
       text = '[Checklist omitted because it contains credential-like content.]';
     }
+    const states: Record<string, string> = { '☑': 'Completed', '☐': 'Not started', '▶': 'In progress', '⛔': 'Blocked' };
+    this.taskPlanProgress = truncateUtf8([...text.matchAll(/^\*\*([☑☐▶⛔]) Plan `[^`]+` — (.+)\*\*$/gm)]
+      .map(parent => `- **${parent[2]}** — ${states[parent[1]]}`).join('\n'), 8 * 1024, '\n_Plan progress shortened for display._');
     const checklist = truncateUtf8(text.trim(), 8 * 1024, '\n[Checklist shortened for display.]');
     if (checklist === this.taskChecklist) return;
     this.taskChecklist = checklist;
@@ -210,7 +215,26 @@ export class LiveStatusComment {
   }
 
   private checklistLines(): string[] {
-    return this.taskChecklist ? ['', '### Task checklist', '', this.taskChecklist] : [];
+    if (!this.taskChecklist) return [];
+    // Keep the outcome steps readable in GitHub; detailed task IDs and evidence
+    // remain available without dominating every progress or closure update.
+    if (!this.taskPlanProgress.length) return ['', '<details><summary>Detailed task checklist</summary>', '', '### Task checklist', '', this.taskChecklist, '', '</details>'];
+    return ['', '### Implementation progress', '', this.taskPlanProgress,
+      '', '<details><summary>Detailed tasks and evidence</summary>', '', '### Task checklist', '', this.taskChecklist, '', '</details>'];
+  }
+
+  /** Retain the first explicit implementation plan while progress changes. */
+  setImplementationPlan(text: string): void {
+    if (this.finished || this.implementationPlan || !text.trim()) return;
+    this.implementationPlan = truncateUtf8(text.trim(), 8 * 1024, '\n\n_Plan shortened for this display._');
+    this.scheduleUpdate();
+  }
+
+  private planLines(collapsed = false): string[] {
+    if (!this.implementationPlan) return [];
+    return collapsed
+      ? ['', '<details><summary>Original implementation plan</summary>', '', this.implementationPlan, '', '</details>']
+      : ['', '### Implementation plan', '', this.implementationPlan];
   }
 
   /** Keep the latest authored explanation visible, separate from tool/heartbeat activity. */
@@ -263,7 +287,7 @@ export class LiveStatusComment {
       '',
       summary.details || 'No outcome report was provided. Task completion has not been verified.',
     ];
-    lines.push(...this.checklistLines());
+    lines.push(...this.checklistLines(), ...this.planLines(true));
     if (summary.prUrl) {
       lines.push(`**PR**: ${summary.prUrl}`);
     }
@@ -330,7 +354,7 @@ export class LiveStatusComment {
         lines.push(`- ${step}`);
       }
     }
-    lines.push(...this.checklistLines(), ...this.explanationLines());
+    lines.push(...this.explanationLines(), ...this.checklistLines(), ...this.planLines(true));
     // Include stage summary showing where it failed
     lines.push('', '### Stages');
     for (const stage of this.stages) {
@@ -358,7 +382,7 @@ export class LiveStatusComment {
   // ─── Private ─────────────────────────────────────────────────────────────
 
   private explanationLines(): string[] {
-    return this.latestExplanation
+    return this.latestExplanation && this.latestExplanation !== this.implementationPlan
       ? ['', '### Agent explanation', '', `_Reported ${this.explanationAt}_`, '', this.latestExplanation]
       : [];
   }
@@ -368,8 +392,9 @@ export class LiveStatusComment {
     const elapsed = formatElapsed(now - this.runStartTime);
     const lines: string[] = [
       `## Agent running — ${elapsed} elapsed (updated ${new Date(now).toISOString().slice(11, 19)} UTC)`,
-      ...this.checklistLines(),
+      ...this.planLines(),
       ...this.explanationLines(),
+      ...this.checklistLines(),
       '',
       '### Progress',
     ];

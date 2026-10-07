@@ -18,8 +18,8 @@ export interface ClosureReport {
 export const reviewClosureSchema = {
   type: 'object', additionalProperties: false,
   properties: {
-    completed: { type: 'array', items: { type: 'string' } },
-    remaining: { type: 'array', items: { type: 'string' } },
+    completed: { type: 'array', description: 'Plain-language delivered behavior and repairs, including concrete verification results and how to reproduce or inspect them.', items: { type: 'string' } },
+    remaining: { type: 'array', description: 'Unfinished work, failed/skipped/not-run validation and deployment or acceptance still needed, with the next owner or action. Do not infer these complete from review approval.', items: { type: 'string' } },
     verifiedTasks: { type: 'array', items: {
       type: 'object', additionalProperties: false,
       properties: { id: { type: 'string' }, evidence: { type: 'string' } },
