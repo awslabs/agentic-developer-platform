@@ -15,9 +15,9 @@ versioned, TLS-only, and retains current evidence for 30 days. Noncurrent
 versions expire 30 days after becoming noncurrent. Destroy protection prevents
 accidental bucket teardown. Writers have conditional-create access only to
 `deployment-evidence/v1/`; the bucket policy rejects unconditional overwrites
-and denies deletion by deployment publishers. The Gateway has read access to
-that prefix, including version reads and prefix-scoped listing. It gains no
-Terraform-state access.
+and denies deletion by deployment publishers. The Gateway and its orchestration
+tick Lambda have read access to that prefix, including version reads and
+prefix-scoped listing. Neither gains Terraform-state access from this policy.
 
 Each object key includes numeric repository ID, run ID, run attempt, kind and
 workflow/component name. The envelope contains the exact evidence bytes and a
