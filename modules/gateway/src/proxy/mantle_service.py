@@ -66,6 +66,17 @@ if TYPE_CHECKING:  # Imported lazily at call time to keep the proxy import graph
 
 logger = logging.getLogger(__name__)
 
+# Retain settlement tasks after a streaming client disconnects. Cancellation of
+# the HTTP response must not discard measured usage or strand budget holds.
+_usage_finalizers: set[asyncio.Task[None]] = set()
+
+
+def _usage_finalized(task: asyncio.Task[None]) -> None:
+    _usage_finalizers.discard(task)
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logger.error("Mantle usage finalization failed: %s", task.get_name(), exc_info=(type(error), error, error.__traceback__))
+
+
 # GPT-5.5 quirk: mantle serves the Responses API on this path.
 MANTLE_RESPONSES_PATH = "/openai/v1/responses"
 
@@ -628,23 +639,29 @@ class MantlePassthroughService:
                             "status_code": result_status,
                         },
                     )
-                    await self._log_usage(
-                        context,
-                        model,
-                        self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
-                        int(latency_ms),
-                        result_status,
-                        request_id,
-                        agent_run_id,
-                        routing_decision=routed.decision,
-                        # An interrupted stream has no final receipt. Keep its full
-                        # admitted bound, as for HTTP 5xx, so affordable retries work.
-                        **(
-                            {"retain_failed_bound": True}
-                            if outcome in {"read_timeout", "transport_error", "premature_eof", "client_cancelled"}
-                            else {}
+                    finalizer = asyncio.create_task(
+                        self._log_usage(
+                            context,
+                            model,
+                            self._capture_usage(sniffer.usage, body, model, sniffer.metadata, base_url=routed.base_url),
+                            int(latency_ms),
+                            result_status,
+                            request_id,
+                            agent_run_id,
+                            routing_decision=routed.decision,
+                            # An interrupted stream has no final receipt. Keep its full
+                            # admitted bound, as for HTTP 5xx, so affordable retries work.
+                            **(
+                                {"retain_failed_bound": True}
+                                if outcome in {"read_timeout", "transport_error", "premature_eof", "client_cancelled"}
+                                else {}
+                            ),
                         ),
+                        name=f"mantle_usage_finalize_{request_id}",
                     )
+                    _usage_finalizers.add(finalizer)
+                    finalizer.add_done_callback(_usage_finalized)
+                    await asyncio.shield(finalizer)
 
         return _passthrough()
 

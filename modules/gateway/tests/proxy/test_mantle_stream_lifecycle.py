@@ -323,3 +323,40 @@ async def test_http_disconnect_finishes_accounting_through_keepalive(context):
     service._log_usage.assert_awaited_once()
     assert service._log_usage.call_args.args[4] == 499
     assert service._log_usage.call_args.kwargs["retain_failed_bound"] is True
+
+
+@pytest.mark.parametrize("payload,status,usage", [(COMPLETED, 200, {"input_tokens": 1, "output_tokens": 2}), (DELTA, 499, {})])
+async def test_disconnect_does_not_cancel_usage_settlement(context, payload, status, usage):
+    """Cancel while pricing awaits I/O, after closing the HTTP response."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+    settled = asyncio.Event()
+    stream = ScriptedStream([payload])
+    service, client = service_for(stream)
+
+    async def settle(*args, **kwargs):
+        started.set()
+        await release.wait()
+        settled.set()
+
+    service._log_usage.side_effect = settle
+    async with client:
+        result = await open_stream(service, context)
+        assert await anext(result) == payload
+        consumer = asyncio.create_task(result.aclose())
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            consumer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await consumer
+            release.set()
+            await asyncio.wait_for(settled.wait(), 1)
+            service._log_usage.assert_awaited_once()
+            assert service._log_usage.call_args.args[2] == usage
+            assert service._log_usage.call_args.args[4] == status
+            assert stream.closed
+        finally:
+            release.set()
+            if not consumer.done():
+                consumer.cancel()
+                await asyncio.gather(consumer, return_exceptions=True)
