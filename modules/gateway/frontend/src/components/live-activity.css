@@ -71,3 +71,9 @@
 .task-filter select:focus-visible, .task-original summary:focus-visible { outline:2px solid var(--live-accent); outline-offset:2px; }
 .task-selection-actions { display:flex; flex-wrap:wrap; gap:.5rem 1rem; margin-top:.5rem; }
 .task-row:focus-visible { outline:2px solid var(--live-accent); outline-offset:2px; }
+.plan-step { border-top:1px solid var(--live-border); padding:.6rem 0; }
+.plan-step summary { cursor:pointer; overflow-wrap:anywhere; }
+.plan-step-title { display:inline; font-weight:650; margin-right:.5rem; }
+.plan-step summary .task-count-detail { display:block; margin:.35rem 0 0 1rem; }
+.plan-step details > ul { margin:.5rem 0 0 .75rem; padding-left:.75rem; border-left:2px solid var(--live-border); list-style:none; }
+.plan-step summary:focus-visible { outline:2px solid var(--live-accent); outline-offset:2px; }

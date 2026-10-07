@@ -19,7 +19,7 @@ import { runResumableTurn } from "./turn.js";
 import { ModelExecutionBudget } from "./model-budget.js";
 import { observeReviewerChecks, type ReviewerChecks } from "./reviewer-checks.js";
 import { deliverEngineReview, type ReviewerMerge } from "./engine-delivery.js";
-import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carryCommits, newlyDone, nextTask, parseTaskBoard,
+import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carryCommits, newlyDone, nextTask, parseTaskBoard, preserveTaskHistory,
   readTaskBoardFile, renderTaskBoard, sanitizeTasks, taskBoardPath, taskListSchema, uncoveredCode, upsertTaskBoardSection,
   writeTaskBoardFile, type Task } from "./task-board.js";
 
@@ -89,7 +89,7 @@ export const repairMilestoneSchema = {
  * shape of its final message. Defects are coerced to the nearest honest outcome
  * and surfaced in `warnings` for the controller to log and feed back. Only
  * non-JSON is rejected, and the caller treats that as "no milestone reported". */
-export function parseRepairMilestone(raw: string): RepairMilestone & { warnings: string[] } {
+export function parseRepairMilestone(raw: string, previous: Task[] | null = null): RepairMilestone & { warnings: string[] } {
   let data: unknown;
   try { data = JSON.parse(raw); } catch { throw new Error('Invalid repair milestone result: not JSON'); }
   const warnings: string[] = [];
@@ -99,9 +99,11 @@ export function parseRepairMilestone(raw: string): RepairMilestone & { warnings:
     ? d.outcome as RepairMilestone['outcome'] : (warnings.push(`outcome "${String(d.outcome)}" treated as checkpoint`), 'checkpoint');
   const summary = typeof d.summary === 'string' && d.summary.trim() ? d.summary.trim() : (warnings.push('no summary given'), '(no summary)');
   let remainingWork = Array.isArray(d.remainingWork) ? (d.remainingWork as unknown[]).filter((v): v is string => typeof v === 'string' && v.trim() !== '').map(v => v.trim()) : [];
-  const sanitized = sanitizeTasks(d.tasks ?? []);
+  const sanitized = sanitizeTasks(d.tasks ?? [], previous ?? []);
   warnings.push(...sanitized.warnings);
-  const tasks = sanitized.tasks;
+  const retained = preserveTaskHistory(previous, sanitized.tasks);
+  warnings.push(...retained.warnings);
+  const tasks = retained.tasks;
   if (outcome === 'complete' && remainingWork.length) { warnings.push('complete listed remaining work; treated as checkpoint'); outcome = 'checkpoint'; }
   if (outcome === 'complete' && tasks.length && !boardComplete(tasks)) {
     warnings.push(`complete claimed with open or uncovered tasks [${[...tasks.filter(t => t.status !== 'done'), ...uncoveredCode(tasks)].map(t => t.id).join(', ')}]; treated as checkpoint`);
@@ -130,7 +132,7 @@ export const BATCH_BUDGET_SHARE = 0.6;
 export interface EngineReviewServices {
   github: Pick<GitHubClient, "getPullRequest" | "getIssue" | "getBranch"> & Partial<Pick<GitHubClient, "taskChecklists" | "updatePullRequestBody">>;
   review(prompt: string): Promise<EngineVerdict>;
-  fix(prompt: string): Promise<RepairMilestone | void>;
+  fix(prompt: string, previous?: Task[] | null): Promise<RepairMilestone | void>;
   checks?(head: string): Promise<ReviewerChecks>;
   deliver?(result: EngineReviewResult, envelope: CodexEngineReviewEnvelope): Promise<ReviewerMerge>;
   wait?(milliseconds: number): Promise<unknown>;
@@ -190,11 +192,11 @@ export function createReviewServices(runtime: ReviewRuntime & { repository: stri
         { outputSchema: engineReviewSchema, signal: reviewSignal(signal, runtime.observer) }, undefined,
         instructions.verify, reviewEvents(runtime.observer, true, 'inspection'))).finalResponse));
     },
-    fix: async prompt => {
+    fix: async (prompt, previous) => {
       runtime.observer?.explanation('Working the next repair task; the controller inspects and publishes finished tasks in batches.');
       return budget.run(async signal => parseRepairMilestone((await runResumableTurn(repair, prompt,
         { outputSchema: repairMilestoneSchema, signal: reviewSignal(signal, runtime.observer) }, undefined,
-        instructions.verify, reviewEvents(runtime.observer, true))).finalResponse));
+        instructions.verify, reviewEvents(runtime.observer, true, 'inspection'))).finalResponse, previous));
     },
   };
 }
@@ -363,17 +365,19 @@ async function runEngineReviewPass(
       const perPublish = milestonesPerPublish();
       for (let n = 0; ; n++) {
         const previous = milestones.at(-1);
-        const taskHint = board ? ` Current task board (work the first open task; code before the test that covers it; no infra task unless it unblocks that task):\n${renderTaskBoard(board)}${boardNotes.length ? `\nController notes on the board (fix in the board you return; they never block you): ${boardNotes.join("; ")}.` : ""}` : criteria.length ? ` Acceptance IDs in the issue, each needing at least one code and one test task on the board you return: ${criteria.join(", ")}.` : "";
+        const taskHint = board ? ` Current task board (resume the in-progress child, otherwise work the first open task; preserve parent steps and finished children; code before the test that covers it; no infra task unless it unblocks that task):\n${renderTaskBoard(board)}${boardNotes.length ? `\nController notes on the board (fix in the board you return; they never block you): ${boardNotes.join("; ")}.` : ""}` : criteria.length ? ` Acceptance IDs in the issue, each needing at least one code and one test task on the board you return: ${criteria.join(", ")}.` : "";
         const prompt = previous === undefined
           ? `${context}\n\nPlan the required repairs as coherent milestones and explain the plan before editing. Fix the next useful milestone from the assigned findings and validation gaps below, within this story and its acceptance criteria.${taskHint}\nA milestone is one task taken to done: the behavior change together with the tests that prove it, running only the tests that cover the changed packages. Return a checkpoint after that milestone, before long validation. Do not accumulate all remaining work into one turn. Report remaining implementation work in remainingWork with outcome checkpoint and the whole task board in tasks; your controller continues you in this same task for further milestones and inspects, commits, pushes and verifies them together. Use outcome complete only when all repairs are implemented and the full relevant suites pass, awaiting_ci when only publication and controller-run CI evidence remains, or blocked for a concrete external dependency that publication and CI cannot resolve. A checkpoint is not approval or story completion. ${conflict ? `The controller prepared a merge of base ${baseSha}; resolve every conflict while preserving the story and current base behavior.` : ""} You own the repair; do not hand it to a developer or ask for another scope approval. Make reasonable implementation decisions from the story and existing code. Add or update focused tests and run them. Report a concrete blocker only if the story cannot determine a required decision or an external dependency is unavailable. Do not commit, push, merge, alter Git configuration, call GitHub or write review reports.\n\n<findings-data>${JSON.stringify(verdict ?? cycle.findings).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")}</findings-data>`
           : `${context}\n\nThe previous milestone is accepted locally and not yet published; the controller will inspect and publish this batch together. Continue in this same working tree with the next milestone from your remaining work: ${previous.remainingWork.join("; ")}.${taskHint ? `\n${taskHint}` : ""}\nDo not re-plan, re-read verified code or re-run suites for untouched packages. Take the next task to done with its covering tests, then return checkpoint with remainingWork and the updated task board, complete when everything is implemented and the full relevant suites pass, awaiting_ci when only publication and controller-run CI evidence remains, or blocked for a concrete external dependency that publication and CI cannot resolve. Do not commit, push, merge, alter Git configuration, call GitHub or write review reports.`;
-        const result = await controller.fix(prompt);
+        const result = await controller.fix(prompt, board);
         await verifyGit(expected);
         if (!result) break; // Legacy services report nothing; one milestone per pass.
         for (const warning of ("warnings" in result && Array.isArray(result.warnings) ? result.warnings : [])) runtime.observer?.activity(`Repair milestone check: ${warning}.`);
         milestones.push(result);
         if (result.tasks?.length) {
-          board = carryCommits(board, result.tasks);
+          board = preserveTaskHistory(board, carryCommits(board, result.tasks)).tasks;
+          const active = result.outcome === "checkpoint" ? nextTask(board) : undefined;
+          if (active?.status === "open") active.status = "in_progress";
           boardNotes = breakdownWarnings(board, criteria);
           for (const note of boardNotes) runtime.observer?.activity(`Task board check: ${note}.`);
           publishBoard(board, result.outcome === "checkpoint" ? nextTask(board)?.id : undefined);

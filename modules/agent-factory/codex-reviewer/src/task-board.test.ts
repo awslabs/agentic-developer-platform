@@ -5,10 +5,49 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carryCommits, isBoardCommit, kindMismatch, newlyDone, nextTask, parseTaskBoard,
   readTaskBoardFile, renderTaskBoard, sanitizeTasks, sizeSignal, taskBoardPath, uncoveredCode, upsertTaskBoardSection, validateTasks, writeTaskBoardFile,
-  type Task } from "./task-board.js";
+  planSteps, preserveTaskHistory, type Task } from "./task-board.js";
 
 const task = (id: string, kind: Task["kind"], status: Task["status"] = "open", covers: string[] = [], extra: Partial<Task> = {}): Task =>
   ({ id, kind, status, covers, criterion: id.split("-")[0]!, title: `${kind} ${id}`, files: [], note: "", ...extra });
+
+test("saved hierarchy survives process restart and resumes the active child", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "adp-plan-"));
+  try {
+    const planStep = { id: "recover-chat", title: "Keep the conversation when the connection drops" };
+    const tasks = [task("A-c1", "code", "done", [], { planStep, commits: ["abcdef1"] }),
+      task("A-t1", "test", "in_progress", ["A-c1"], { planStep }), task("B-c1", "code")];
+    await writeTaskBoardFile(workspace, 42, tasks);
+    const file = JSON.parse(await readFile(join(workspace, taskBoardPath(42)), "utf8"));
+    assert.deepEqual(file.plan, [{ ...planStep, status: "in_progress", taskIds: ["A-c1", "A-t1"], completed: 1, total: 2 }]);
+    const restored = (await readTaskBoardFile(workspace, 42)).tasks!;
+    assert.deepEqual(restored, tasks);
+    assert.equal(nextTask(restored)?.id, "A-t1");
+    assert.equal(planSteps(restored)[0]?.status, "in_progress");
+    assert.match(renderTaskBoard(restored), /\*\*▶ Plan `recover-chat` — Keep the conversation/);
+    restored[1]!.status = "blocked"; restored[1]!.note = "needs live target";
+    assert.equal(planSteps(restored)[0]?.status, "blocked");
+    restored[1]!.status = "done";
+    assert.equal(planSteps(restored)[0]?.status, "done");
+    assert.equal(planSteps([restored[0]!])[0]?.status, "in_progress", "uncovered code cannot finish its parent");
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
+test("partial outcomes retain saved children and canonical parent identities", () => {
+  const planStep = { id: "login", title: "Keep each environment's login separate" };
+  const saved = [task("A-c1", "code", "done", [], { planStep, commits: ["abcdef1"] }),
+    task("A-t1", "test", "in_progress", ["A-c1"], { planStep })];
+  const reported = sanitizeTasks([task("A-t1", "test", "done", ["A-c1"], { planStep: { ...planStep, title: "Changed" } }),
+    task("A-c2", "code", "open", [], { planStep: { ...planStep, title: "Changed" } })], saved);
+  const merged = preserveTaskHistory(saved, reported.tasks);
+  assert.deepEqual(merged.tasks.map(t => t.id), ["A-c1", "A-t1", "A-c2"]);
+  assert.deepEqual(merged.tasks[0], saved[0]);
+  assert.deepEqual(merged.tasks[1]?.covers, ["A-c1"]);
+  assert.ok(merged.tasks.every(t => t.planStep?.title === planStep.title));
+  assert.doesNotThrow(() => validateTasks(merged.tasks));
+  assert.equal(boardComplete(merged.tasks), false);
+  assert.match(merged.warnings.join(" "), /omitted/);
+  assert.throws(() => validateTasks([task("A-c1", "code", "open", [], { planStep: { id: "bad id", title: "x" } })]), /Invalid implementation/);
+});
 
 test("task board validation rejects duplicates, dangling coverage, uncovered tests and silent blockers", () => {
   assert.throws(() => validateTasks([task("A-c1", "code"), task("A-c1", "code")]), /Duplicate/);
@@ -132,7 +171,7 @@ test("the branch board file round-trips, rejects another issue's board, and repo
 test("sanitizing a model board repairs every defect to an honest shape and reports it, never throws", () => {
   const { tasks, warnings } = sanitizeTasks([
     { id: "DATA02 c1!", kind: "code", status: "done", title: "ACL write" },
-    { id: "DATA02-c1", kind: "feature", status: "in_progress", title: "", covers: ["nope"] },
+    { id: "DATA02-c1", kind: "feature", status: "working", title: "", covers: ["nope"] },
     { id: "", kind: "test", status: "open", title: "covers nothing" },
     { id: "DATA02-i1", kind: "infra", status: "blocked", title: "harness", covers: [] },
     "garbage",
@@ -145,7 +184,7 @@ test("sanitizing a model board repairs every defect to an honest shape and repor
   ]);
   assert.deepEqual(tasks[1]!.covers, [], "dangling coverage is dropped");
   assert.equal(tasks[3]!.note, "(no reason given)");
-  for (const expected of [/normalised to DATA02-c1/, /duplicate task id/, /unknown kind "feature"/, /unknown status "in_progress"/, /no title/,
+  for (const expected of [/normalised to DATA02-c1/, /duplicate task id/, /unknown kind "feature"/, /unknown status "working"/, /no title/,
     /named task-3/, /covers unknown tasks nope/, /test task task-3 does not name the code task/, /infra task DATA02-i1 does not name/, /blocked without a reason/, /task 4 ignored/]) {
     assert.match(warnings.join("\n"), expected);
   }

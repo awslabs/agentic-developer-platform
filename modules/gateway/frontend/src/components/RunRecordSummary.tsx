@@ -1,4 +1,6 @@
 import { checklistContribution, type RunRecord } from '@/utils/runRecord';
+import { LiveTaskChecklist } from './LiveTaskChecklist';
+import './live-activity.css';
 import './run-workspace.css';
 export function RunClosureReport({ record }: { record?: RunRecord }) {
   const report = record?.closure_report;
@@ -24,11 +26,18 @@ export function RunRecordSummary({ record }: { record?: RunRecord }) {
   if (!record) return <aside className="run-record" aria-label="Retained run record"><h3 className="font-semibold">Run record</h3><p className="text-sm mt-3">Structured checklist history was not captured or could not be read for this run. The original transcript remains available.</p></aside>;
   const tasks = record.latest_checklist?.tasks;
   const contribution = checklistContribution(record);
+  const hierarchical = tasks?.some(task => task.planStep);
   return <aside className="run-record" aria-label="Retained run record">
     <h3 className="font-semibold">Saved assignment checklist</h3>
     {tasks ? <>
-      <p className="run-count">{tasks.filter(t => t.status === 'completed').length} of {tasks.length} checked</p>
-      <ul aria-label="Saved tasks">{tasks.map(t => <li key={t.id}><span aria-label={t.status.replace('_', ' ')}>{t.status === 'completed' ? '☑' : t.status === 'in_progress' ? '◐' : '☐'}</span><span>{t.text}</span></li>)}</ul>
+      {hierarchical ? <div className="live-checklist"><LiveTaskChecklist live={false} counts={new Map()} tasks={tasks.map(task => ({
+        id: task.taskId ?? task.id, kind: task.kind ?? 'code', status: task.status,
+        group: task.planStep?.title ?? '', planStep: task.planStep,
+        description: task.text.replace(/^`(?:code|test|infra)` [A-Za-z0-9._-]+ — /, ''),
+      }))} /></div> : <>
+        <p className="run-count">{tasks.filter(t => t.status === 'completed').length} of {tasks.length} checked</p>
+        <ul aria-label="Saved tasks">{tasks.map(t => <li key={t.id}><span aria-label={t.status.replace('_', ' ')}>{t.status === 'completed' ? '☑' : t.status === 'in_progress' ? '◐' : t.status === 'blocked' ? '⛔' : '☐'}</span><span>{t.text}</span></li>)}</ul>
+      </>}
       {record.first_checklist && <section aria-label="Work observed in this run" className="border-t mt-4 pt-3 text-sm">
         <h4 className="font-semibold">Work observed in this run</h4>
         <p className="mt-2">{contribution.completedSinceFirst.length} checked after first observation</p>
@@ -39,7 +48,7 @@ export function RunRecordSummary({ record }: { record?: RunRecord }) {
         {!!contribution.removed.length && <details><summary>Removed or renamed tasks</summary><ul>{contribution.removed.map(t => <li key={t.id}>{t.text}</li>)}</ul></details>}
       </section>}
     </> : <p className="text-sm mt-3">No assignment checklist was captured.</p>}
-    <p className="text-xs text-gray-500 mt-3">Agent-reported, not proof of acceptance. The baseline is the first observed checklist, not necessarily dispatch. Task matching uses exact wording.</p>
+    <p className="text-xs text-gray-500 mt-3">Agent-reported, not proof of acceptance. The baseline is the first observed checklist, not necessarily dispatch. Board tasks use stable IDs; legacy checklists use exact wording.</p>
     {record.history_truncated && <p className="text-xs mt-2">Earlier task transitions were truncated.</p>}
     <dl>
       <dt>Capture started</dt><dd>{record.started_at}</dd>

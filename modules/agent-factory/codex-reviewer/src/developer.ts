@@ -9,7 +9,7 @@ import { run } from "./process.js";
 import { runDeveloperStream, type DeveloperReporter } from "./developer-stream.js";
 import { ModelExecutionBudget } from "./model-budget.js";
 import { acceptanceIds, attributeCommits, boardComplete, breakdownWarnings, carryCommits, describeTask, isBoardCommit, kindMismatch,
-  newlyDone, nextTask, readTaskBoardFile, renderTaskBoard, sanitizeTasks, sizeSignal, taskBoardPath, taskListSchema, uncoveredCode,
+  newlyDone, nextTask, preserveTaskHistory, readTaskBoardFile, renderTaskBoard, sanitizeTasks, sizeSignal, taskBoardPath, taskListSchema, uncoveredCode,
   upsertTaskBoardSection, writeTaskBoardFile, type Task } from "./task-board.js";
 
 export interface DeveloperTask {
@@ -81,10 +81,13 @@ export function interpretDeveloperOutcome(raw: string, previous: Task[] | null):
     ? d.outcome as DeveloperOutcome["outcome"] : (warnings.push(`outcome "${String(d.outcome)}" is not complete/checkpoint/blocked; treated as checkpoint`), "checkpoint");
   const summary = typeof d.summary === "string" && d.summary.trim() ? d.summary.trim() : (warnings.push("no summary given"), "(no summary)");
   let remainingWork = Array.isArray(d.remainingWork) ? (d.remainingWork as unknown[]).filter((v): v is string => typeof v === "string" && v.trim() !== "").map(v => v.trim()) : [];
-  const sanitized = sanitizeTasks(d.tasks);
+  const sanitized = sanitizeTasks(d.tasks, previous ?? []);
   warnings.push(...sanitized.warnings);
   let tasks = sanitized.tasks;
   if (!tasks.length && previous?.length) { tasks = previous; warnings.push("no task board returned; the previous board is kept"); }
+  const retained = preserveTaskHistory(previous, tasks);
+  tasks = retained.tasks;
+  warnings.push(...retained.warnings);
   if (outcome === "complete" && !boardComplete(tasks)) {
     const open = tasks.filter(task => task.status !== "done").map(task => task.id);
     const uncovered = uncoveredCode(tasks).map(task => task.id);
@@ -313,6 +316,17 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
     if (sink.progress) sink.progress(text, { id: "adp-task-board", category: "plan", state: "running", plan_scope: "assignment" });
     else sink.activity(text);
   };
+  // Persist the active child before starting inference, so a failed process
+  // resumes this task rather than constructing a new plan from its transcript.
+  if (previousTasks?.length) {
+    const active = nextTask(previousTasks);
+    if (active?.status === "open") {
+      active.status = "in_progress";
+      await recordBoard(previousTasks, 0);
+      lastHead = await git("rev-parse", "HEAD");
+    }
+    publishBoard(previousTasks, active?.id, stamp());
+  }
   const loop = await runDeveloperTurns(initialPrompt, (turnPrompt, signal) => runDeveloperStream(thread, turnPrompt,
     { outputSchema: developerOutcomeSchema, signal: AbortSignal.any([signal, ...control]) }, sink, persona.verify, true), {
     budget, maxTurns: task.maxTurns, previousTasks: existing.tasks,
@@ -336,6 +350,8 @@ export async function runDeveloper(task: DeveloperTask, prepared = false, report
       const attributed = attributeCommits(carryCommits(previousTasks, outcome.tasks), commits, completed);
       for (const commit of attributed.unattributed) sink.activity(`Commit ${commit.sha} names no task id and no task finished this turn: ${commit.subject}`);
       outcome.tasks = attributed.tasks;
+      const active = next && outcome.tasks.find(task => task.id === next.id);
+      if (active?.status === "open") active.status = "in_progress";
       publishBoard(outcome.tasks, next?.id, since);
       const changed = head === lastHead ? [] : (await git("diff", "--name-only", lastHead, head)).split("\n").filter(Boolean)
         .filter(file => file !== taskBoardPath(task.issue));

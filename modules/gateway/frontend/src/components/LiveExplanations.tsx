@@ -164,7 +164,7 @@ export function LiveExplanations({ invocationId, isOpen, terminal, onTerminal, w
       <h4>Task checklist</h4>
       <p className="live-muted task-count-detail">Checklist updated <time dateTime={plan.timestamp}>{new Date(plan.timestamp).toLocaleTimeString()}</time></p>
       {tasks ? <>
-        <LiveTaskChecklist key={`${invocationId}:${selection?.id ?? ''}`} tasks={tasks} selected={selection?.id} counts={taskCounts}
+        <LiveTaskChecklist key={invocationId} tasks={tasks} selected={selection?.id} counts={taskCounts}
           live={!terminal && status === 'Connected'} onSelect={selectTask} />
         <details className="task-original"><summary>Original checklist and notes</summary>
           <ReactMarkdown skipHtml remarkPlugins={[remarkGfm]} components={planComponents}>{plan.payload.text}</ReactMarkdown>

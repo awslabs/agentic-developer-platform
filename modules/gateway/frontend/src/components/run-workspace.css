@@ -33,3 +33,6 @@
   .run-workspace :is(.text-blue-600, .dark\:text-blue-400),
   .run-identity .text-blue-600 { color:#93c5fd; }
 }
+
+.run-record .plan-step, .run-record .task-row { display:block; min-width:0; }
+.run-record .live-checklist { --live-border:#94a3b844; --live-accent:#2563eb; }

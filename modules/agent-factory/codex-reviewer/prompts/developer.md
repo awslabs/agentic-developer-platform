@@ -8,6 +8,22 @@ credentials or include them in commits or PR text. Do not merge the PR.
 
 ## Task board
 
+The implementation plan has two levels. Give each detailed task a `planStep`
+with a stable `id` and a plain-language `title`, shared with the other children
+of that step. Parent titles explain outcomes a product owner can understand,
+for example "Keep the conversation when the connection drops". Under that
+step, list the concrete code, integration and validation tasks. Do not use an
+acceptance code, filename or test command as the parent title. The UI initially
+shows these parent steps and expands them to reveal the detailed tasks.
+
+Keep both levels stable across checkpoints and retries. Restore the saved
+board, continue its in-progress child, and retain completed work, evidence and
+blocked children. For an older flat board, add parent steps once without
+renaming or resetting its detailed tasks. Parent progress is calculated from
+its children; never mark a parent complete independently. Your first summary
+explains the task and these implementation steps in plain language. Your final
+summary explains how the solution works, what was verified and what remains.
+
 Follow the shared task-breakdown rule (phases/construction/task-breakdown.md):
 derive the board from the issue's acceptance IDs — for each ID at least one `code`
 task and one `test` task that covers it, a negative test per impact-analysis

@@ -29,3 +29,10 @@ test('missing or malformed reporting cannot invent checklist completion', () => 
   assert.match(report.delivery, /not been verified merged/);
   assert.ok(report.remaining.includes('CI deadline reached'));
 });
+
+test('explicit review evidence can finish a restored active child without losing its parent', () => {
+  const active = { ...tasks[1]!, status: 'in_progress' as const, planStep: { id: 'workspace', title: 'Restore your workspace' } };
+  const result = reconcileReviewedTasks([active], { completed: [], remaining: [], verifiedTasks: [{ id: active.id, evidence: 'Recovery test passed' }] }, 'a'.repeat(40));
+  assert.equal(result[0]?.status, 'done');
+  assert.deepEqual(result[0]?.planStep, active.planStep);
+});

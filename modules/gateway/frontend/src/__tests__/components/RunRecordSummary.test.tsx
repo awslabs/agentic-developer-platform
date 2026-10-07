@@ -16,7 +16,7 @@ const record: RunRecord = {
     { id: id(4), text: 'New wording', status: 'completed' }, { id: id(5), text: 'Verify', status: 'in_progress' },
   ] },
 };
-const envelope = (r: unknown) => '<!-- adp-run-record:v1 ' + btoa(JSON.stringify(r)) + ' -->\n\n# Transcript';
+const envelope = (r: unknown) => '<!-- adp-run-record:v1 ' + btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(r)))) + ' -->\n\n# Transcript';
 describe('retained run records', () => {
   it('renders the closure as plain text with completed and remaining work', () => {
     const withClosure = { ...record, closure_report: { summary: 'Workspace onboarding is ready for integration.',
@@ -59,4 +59,15 @@ describe('retained run records', () => {
     expect(screen.getByText(/Structured checklist history was not captured/)).toBeInTheDocument();
     expect(screen.queryByText(/0 of/)).not.toBeInTheDocument();
   });
+});
+
+it('retains expandable hierarchy and blocked progress in a saved failed-run record', () => {
+  const tasks = [{ id: id(1), taskId: 'A-t1', kind: 'test', text: '`test` A-t1 — Verify recovery', status: 'blocked',
+    planStep: { id: 'recover', title: 'Keep conversations after disconnects', status: 'blocked' } }];
+  const parsed = parseRunRecord(envelope({ ...record, first_checklist: { at, tasks }, latest_checklist: { at, tasks } }), 'run-42');
+  expect(parsed).toBeDefined();
+  const { container } = render(<RunRecordSummary record={parsed} />);
+  expect(screen.getByText('0 of 1 steps completed')).toBeInTheDocument();
+  expect(screen.getByText('Keep conversations after disconnects')).toBeInTheDocument();
+  expect(container.querySelector('.plan-step details')).not.toHaveAttribute('open');
 });

@@ -186,7 +186,7 @@ test('final reviewer closure and reconciled tasks reach the saved transcript', a
   const markdown = writes.at(-1)![1] as string;
   const encoded = /^<!-- adp-run-record:v1 ([A-Za-z0-9+/=]+) -->/.exec(markdown)![1];
   const record = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
-  expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'pending']);
+  expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'blocked']);
   expect(record.closure_report.summary).toBe('The workspace UI is ready for integration.');
   expect(record.closure_report.remaining).toEqual(['Live demo remains with the evaluator.']);
   expect(markdown).toContain('## Closure report');
