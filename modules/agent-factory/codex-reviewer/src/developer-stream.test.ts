@@ -110,3 +110,23 @@ for (const terminalFailure of [false, true]) {
     assert.equal(notifications, starts * 5);
   });
 }
+
+test('structured turns publish human plans, hide outcome JSON, and isolate scratch task lists', async () => {
+  const { reporter, seen } = recorder();
+  const progress: Array<{ text: string; plan_scope?: string }> = [];
+  reporter.progress = (text, detail) => progress.push({ text, ...detail });
+  const events = async function* (): AsyncGenerator<ThreadEvent> {
+    yield { type: 'item.completed', item: { id: 'plan', type: 'agent_message', text: 'Keep conversations available after reconnecting.' } };
+    yield { type: 'item.completed', item: { id: 'scratch', type: 'todo_list', items: [{ text: 'Read files', completed: true }] } };
+    yield { type: 'item.updated', item: { id: 'outcome', type: 'agent_message', text: '{"outcome":' } };
+    yield { type: 'item.completed', item: { id: 'outcome', type: 'agent_message', text: '{"outcome":"checkpoint"}' } };
+    yield { type: 'turn.completed', usage: { input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, reasoning_output_tokens: 0 } };
+  };
+  const result = await runDeveloperStream({ id: 'session', runStreamed: async () => ({ events: events() }) }, 'work', {}, reporter, () => {}, true);
+  assert.equal(result.finalResponse, '{"outcome":"checkpoint"}');
+  assert.equal(progress.length, 2);
+  assert.match(progress[0]!.text, /Keep conversations/);
+  assert.equal(progress[1]!.plan_scope, 'inspection');
+  assert.ok(!JSON.stringify(progress).includes('checkpoint'));
+  assert.deepEqual(seen, []);
+});

@@ -1,5 +1,9 @@
 /** Versioned, untrusted metadata embedded in the existing authorized transcript. */
-export interface RecordedTask { id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }
+export interface RecordedTask {
+  id: string; text: string; status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  taskId?: string; kind?: 'code' | 'test' | 'infra';
+  planStep?: { id: string; title: string; status: RecordedTask['status'] };
+}
 interface Snapshot { at: string; tasks: RecordedTask[] }
 export interface ClosureReport {
   summary: string; completed: string[]; remaining: string[]; delivery: string;
@@ -17,11 +21,18 @@ export interface RunRecord {
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v: unknown, max = 4096): v is string => typeof v === 'string' && v.length <= max;
 const date = (v: unknown): v is string => text(v, 64) && Number.isFinite(Date.parse(v));
-const states = ['pending', 'in_progress', 'completed'];
+const states = ['pending', 'in_progress', 'completed', 'blocked'];
+const taskId = (v: unknown) => text(v, 64) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v);
+function hierarchy(t: Record<string, unknown>): boolean {
+  if (t.taskId !== undefined && !taskId(t.taskId)) return false;
+  if (t.kind !== undefined && !['code', 'test', 'infra'].includes(String(t.kind))) return false;
+  return t.planStep === undefined || (object(t.planStep) && taskId(t.taskId) && taskId(t.planStep.id) &&
+    text(t.planStep.title, 300) && !!t.planStep.title.trim() && states.includes(String(t.planStep.status)));
+}
 function snapshot(v: unknown): boolean {
   return v === undefined || (object(v) && date(v.at) && Array.isArray(v.tasks) && v.tasks.length <= 100 &&
     new Set(v.tasks.map(t => object(t) ? t.id : null)).size === v.tasks.length &&
-    v.tasks.every(t => object(t) && text(t.id, 24) && /^[a-f0-9]{24}$/.test(t.id) && text(t.text, 1024) && !!t.text && states.includes(String(t.status))));
+    v.tasks.every(t => object(t) && text(t.id, 24) && /^[a-f0-9]{24}$/.test(t.id) && text(t.text, 1024) && !!t.text && states.includes(String(t.status)) && hierarchy(t)));
 }
 export function parseRunRecord(markdown: string, invocationId: string): RunRecord | undefined {
   // Only the leading envelope is authoritative; never parse a tool's quoted examples.

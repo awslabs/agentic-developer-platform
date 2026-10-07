@@ -47,7 +47,7 @@ export function reconcileReviewedTasks(tasks: Task[], closure: ReviewClosure | u
   return tasks.map(task => {
     const verified = closure?.verifiedTasks.find(item => item.id === task.id);
     // Deferred/blocked tasks stay visible; resolving them requires a repair milestone.
-    return task.status === 'open' && verified
+    return (task.status === 'open' || task.status === 'in_progress') && verified
       ? { ...task, status: 'done', note: `Verified at ${head}: ${verified.evidence}` } : task;
   });
 }

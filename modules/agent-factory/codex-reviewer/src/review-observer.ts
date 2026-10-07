@@ -22,7 +22,11 @@ export function reviewEvents(observer?: ReviewObserver, structured = false, plan
   });
   return (event: ThreadEvent) => {
     // The structured verdict is published by the controller after validation.
-    if (structured && 'item' in event && event.item.type === 'agent_message') return;
+    if (structured && 'item' in event && event.item.type === 'agent_message'
+        && (event.type !== 'item.completed' || /^\s*(?:[\[{]|```)/.test(event.item.text))) {
+      reporter.observeEvent?.(event);
+      return;
+    }
     publishDeveloperEvent(event, reporter);
   };
 }

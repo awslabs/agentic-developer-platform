@@ -222,3 +222,14 @@ test("breakdown checks join the controller notes on the next turn and never end 
   assert.equal(result.outcome.outcome, "complete");
   assert.match(runs.prompts[1]!, /Controller notes on your last outcome.*acceptance criterion AC2 has no tasks/);
 });
+
+test("completion cannot drop an unfinished saved child or change its parent", () => {
+  const planStep = { id: "recover", title: "Keep conversations after disconnects" };
+  const previous = [t("A-c1", "code", "done"), t("A-t1", "test", "done", ["A-c1"]),
+    t("A-t2", "test", "in_progress", ["A-c1"])].map(task => ({ ...task, planStep }));
+  const result = interpretDeveloperOutcome(outcome({ outcome: "complete", tasks: previous.slice(0, 2) }), previous);
+  assert.equal(result.outcome.outcome, "checkpoint");
+  assert.deepEqual(result.outcome.tasks[2], previous[2]);
+  assert.ok(result.outcome.remainingWork.includes("A-t2"));
+  assert.match(resumeNote(result.outcome.tasks), /A-t2/);
+});

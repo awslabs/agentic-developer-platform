@@ -5,7 +5,11 @@ import { writeFileSync, renameSync } from 'node:fs';
 import { containsSecret } from './experience-save-hook';
 import { truncateUtf8 } from './reporting-text';
 
-export interface RecordedTask { id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }
+export interface RecordedTask {
+  id: string; text: string; status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  taskId?: string; kind?: 'code' | 'test' | 'infra';
+  planStep?: { id: string; title: string; status: RecordedTask['status'] };
+}
 export interface ChecklistSnapshot { at: string; tasks: RecordedTask[] }
 export interface ClosureReport {
   summary: string; completed: string[]; remaining: string[]; delivery: string;
@@ -33,7 +37,15 @@ export function recordText(value: string, limit = 4096): string {
 /** Parse only our runtime's checklist format; prose and tool output are not task state. */
 export function parseTaskChecklist(text: string): RecordedTask[] | undefined {
   const tasks: RecordedTask[] = [];
+  let planStep: RecordedTask['planStep'];
   for (const line of text.split('\n')) {
+    const parent = /^\*\*([☑☐▶⛔]) Plan `([A-Za-z0-9][A-Za-z0-9._-]{0,63})` — (.{1,300})\*\*$/.exec(line.trim());
+    if (parent) {
+      if (recordText(parent[3]) !== parent[3]) return;
+      planStep = { id: parent[2], title: parent[3], status: parent[1] === '☑' ? 'completed' : parent[1] === '▶' ? 'in_progress' : parent[1] === '⛔' ? 'blocked' : 'pending' };
+      continue;
+    }
+    if (/^\*\*.+\*\*$/.test(line.trim())) planStep = undefined;
     const match = /^- ([☑☐▶⛔]) (.+)$/.exec(line.trim());
     if (!match) continue;
     const inProgress = match[2].endsWith(' (in progress)');
@@ -44,10 +56,14 @@ export function parseTaskChecklist(text: string): RecordedTask[] | undefined {
     // otherwise a long note freezes the whole checklist or collides with another.
     const safe = recordText(label, Buffer.byteLength(label, 'utf8'));
     if (safe !== label) return; // Redaction must not fabricate a different task identity.
-    const id = createHash('sha256').update(label).digest('hex').slice(0, 24);
+    const explicit = /^`(code|test|infra)` ([A-Za-z0-9][A-Za-z0-9._-]{0,63}) — /.exec(label);
+    const id = createHash('sha256').update(explicit ? `task:${explicit[2]}` : label).digest('hex').slice(0, 24);
     if (tasks.some(task => task.id === id)) return;
     tasks.push({ id, text: truncateUtf8(label, 1024, '… [Task text shortened; see task board.]'),
-      status: match[1] === '☑' ? 'completed' : inProgress || match[1] === '▶' ? 'in_progress' : 'pending' });
+      status: match[1] === '☑' ? 'completed' : inProgress || match[1] === '▶' ? 'in_progress' : match[1] === '⛔' ? 'blocked' : 'pending',
+      ...(explicit ? { taskId: explicit[2], kind: explicit[1] as RecordedTask['kind'] } : {}),
+      ...(planStep ? { planStep } : {}),
+    });
   }
   return tasks.length ? tasks : undefined;
 }
@@ -167,7 +183,7 @@ export class RunRecordCapture {
       'SDK sessions: ' + (r.session_ids.join(', ') || 'Not captured'),
       'This is an agent-reported record, not proof of acceptance, merge, publication or billed usage. '
         + 'The first checklist is the first observed plan, not necessarily the state at dispatch. '
-        + 'Task identity uses exact wording; renamed or removed tasks are not silently counted as completed.',
+        + 'Detailed board tasks retain stable IDs and parent steps; legacy checklist identity uses exact wording. Removed tasks are not silently counted as completed.',
       '### Checklist at last observation',
       ...(tasks ? tasks.map(t => '- [' + (t.status === 'completed' ? 'x' : ' ') + '] ' + t.text
         + (t.status === 'in_progress' ? ' (in progress)' : '')) : ['No assignment checklist was captured.']),

@@ -1373,3 +1373,16 @@ test("canonical strict-base repair still integrates and validates the published 
   assert.notEqual(result.sha, state.sha);
   assert.equal(result.merged, true);
 });
+
+test("review repairs retain omitted children and parent identity before evaluating completion", () => {
+  const planStep = { id: "recover", title: "Keep conversations after disconnects" };
+  const saved = [boardTask("AC1-c1", "code", "done"), boardTask("AC1-t1", "test", "in_progress", ["AC1-c1"])].map(task => ({ ...task, planStep }));
+  const partial = parseRepairMilestone(JSON.stringify({ outcome: "complete", summary: "Done", remainingWork: [], tasks: [saved[0]] }), saved);
+  assert.equal(partial.tasks?.length, 2);
+  assert.equal(partial.outcome, "checkpoint");
+  assert.deepEqual(partial.tasks?.[1], saved[1]);
+  const done = parseRepairMilestone(JSON.stringify({ outcome: "complete", summary: "Proven", remainingWork: [], tasks: [{ ...saved[1], status: "done", planStep: { id: "other", title: "New parent" } }] }), saved);
+  assert.equal(done.outcome, "complete");
+  assert.deepEqual(done.tasks?.[1]?.planStep, planStep);
+  assert.deepEqual(done.tasks?.[1]?.covers, ["AC1-c1"]);
+});

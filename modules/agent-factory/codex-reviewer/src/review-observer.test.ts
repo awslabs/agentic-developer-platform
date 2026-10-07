@@ -12,10 +12,11 @@ test('review activity omits reasoning, command output and unvalidated structured
   };
   const publish = reviewEvents(observer, true)!;
   publish({ type: 'item.completed', item: { type: 'reasoning', id: 'r', text: 'private' } });
-  publish({ type: 'item.completed', item: { type: 'agent_message', id: 'v', text: 'unvalidated verdict' } });
+  publish({ type: 'item.completed', item: { type: 'agent_message', id: 'v', text: '{"verdict":"approve"}' } });
   publish({ type: 'item.completed', item: { type: 'command_execution', id: 'c', command: 'npm test',
     aggregated_output: 'private output', status: 'completed', exit_code: 0 } });
-  assert.deepEqual(seen, ['Finished (exit 0): npm test']);
+  publish({ type: 'item.completed', item: { type: 'agent_message', id: 'plan', text: 'I will check that conversations survive reconnecting.' } });
+  assert.deepEqual(seen, ['Finished (exit 0): npm test', 'I will check that conversations survive reconnecting.']);
   assert.ok(observed.includes('item.completed'), 'SDK command lifecycle reaches the control observer');
 });
 

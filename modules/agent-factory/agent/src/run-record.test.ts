@@ -94,10 +94,19 @@ test('archives the final checklist and sanitized closure ahead of transcript his
       remaining: ['Run the live demo with a-private-api-key.'], delivery: 'Pull request merged.', reporting_notes: [] });
     c.close();
     const record = JSON.parse(readFileSync(join(directory, 'record.json'), 'utf8'));
-    expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'completed', 'pending']);
+    expect(record.latest_checklist.tasks.map((t: any) => t.status)).toEqual(['completed', 'completed', 'blocked']);
     expect(record.closure_report.delivery).toBe('Pull request merged.');
     expect(record.closure_report.remaining[0]).toContain('[redacted]');
     expect(c.markdown().indexOf('## Closure report')).toBeLessThan(c.markdown().indexOf('## Run record'));
     expect(c.markdown()).not.toContain('a-private-api-key');
   } finally { delete process.env.TEST_API_KEY; }
+});
+
+test('hierarchical board retains stable child identity across evidence and status changes', () => {
+  const before = parseTaskChecklist('**▶ Plan `recover` — Keep conversations after disconnects**\n- ▶ `code` A-c1 — Save the conversation')!;
+  const after = parseTaskChecklist('**☑ Plan `recover` — Keep conversations after disconnects**\n- ☑ `code` A-c1 — Save the conversation — verified · `abcdef1`')!;
+  expect(before[0].id).toBe(after[0].id);
+  expect(after[0]).toMatchObject({ taskId: 'A-c1', kind: 'code', status: 'completed',
+    planStep: { id: 'recover', title: 'Keep conversations after disconnects', status: 'completed' } });
+  expect(parseTaskChecklist('**⛔ Plan `recover` — Keep conversations after disconnects**\n- ⛔ `test` A-t1 — Await live target')![0].status).toBe('blocked');
 });

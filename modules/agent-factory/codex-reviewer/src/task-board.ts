@@ -7,11 +7,12 @@
  * a 10k-line diff. The runtime renders it; the model only reports it.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export type TaskKind = "code" | "test" | "infra";
-export type TaskStatus = "open" | "done" | "blocked";
+export type TaskStatus = "open" | "in_progress" | "done" | "blocked";
+export interface PlanStep { id: string; title: string }
 
 export interface Task {
   id: string;
@@ -26,12 +27,14 @@ export interface Task {
   files: string[];
   /** Blocker or short evidence note. */
   note: string;
+  /** Stable, human-readable implementation step owning this detailed task. */
+  planStep?: PlanStep;
   /** Short SHAs the controller attributed to this task; never model-supplied. */
   commits?: string[];
 }
 
 export const TASK_KINDS: readonly TaskKind[] = ["code", "test", "infra"];
-export const TASK_STATUSES: readonly TaskStatus[] = ["open", "done", "blocked"];
+export const TASK_STATUSES: readonly TaskStatus[] = ["open", "in_progress", "done", "blocked"];
 const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** Strict schema fragment for Codex structured output (every key required). */
@@ -46,11 +49,25 @@ export const taskSchema = {
     covers: { type: "array", items: { type: "string" } },
     files: { type: "array", items: { type: "string" } },
     note: { type: "string" },
+    planStep: {
+      type: "object", additionalProperties: false,
+      properties: { id: { type: "string" }, title: { type: "string", description: "Plain-language outcome in the implementation plan. Explain what will work, without task codes or file paths. Reuse the same stable id and title for all children of this step." } },
+      required: ["id", "title"],
+    },
   },
-  required: ["id", "kind", "criterion", "title", "status", "covers", "files", "note"],
+  required: ["id", "kind", "criterion", "title", "status", "covers", "files", "note", "planStep"],
 };
 
 export const taskListSchema = { type: "array", items: taskSchema };
+
+function readPlanStep(raw: unknown): PlanStep | undefined {
+  if (raw === undefined) return undefined; // Existing flat boards remain readable.
+  if (!raw || typeof raw !== "object") throw new Error("Invalid implementation plan step");
+  const step = raw as Record<string, unknown>;
+  if (typeof step.id !== "string" || !TASK_ID.test(step.id) || typeof step.title !== "string" ||
+      !step.title.trim() || step.title.length > 300 || /[\r\n]/.test(step.title)) throw new Error("Invalid implementation plan step");
+  return { id: step.id, title: step.title.trim() };
+}
 
 /** Validate a reported board. Dangling references and duplicate ids are model
  * errors, not something the controller should repair silently. */
@@ -74,13 +91,20 @@ export function validateTasks(raw: unknown): Task[] {
       criterion: typeof task.criterion === "string" ? task.criterion.trim() : "",
       covers: strings(task.covers, "covers"), files: strings(task.files, "files"),
       note: typeof task.note === "string" ? task.note.trim() : "",
+      ...(task.planStep !== undefined ? { planStep: readPlanStep(task.planStep) } : {}),
       ...(commits.length ? { commits } : {}),
     } satisfies Task;
   });
   const ids = new Set<string>();
+  const steps = new Map<string, string>();
   for (const task of tasks) {
     if (ids.has(task.id)) throw new Error(`Duplicate task id ${task.id}`);
     ids.add(task.id);
+    if (task.planStep) {
+      const title = steps.get(task.planStep.id);
+      if (title && title !== task.planStep.title) throw new Error(`Inconsistent title for plan step ${task.planStep.id}`);
+      steps.set(task.planStep.id, task.planStep.title);
+    }
   }
   for (const task of tasks) {
     for (const ref of task.covers) if (!ids.has(ref)) throw new Error(`Task ${task.id} covers unknown task ${ref}`);
@@ -97,7 +121,7 @@ export function validateTasks(raw: unknown): Task[] {
  * defect is repaired to the nearest honest shape and reported as a warning the
  * controller feeds back on the next turn. Strict `validateTasks` is reserved for
  * data the controller wrote itself (the branch file). */
-export function sanitizeTasks(raw: unknown): { tasks: Task[]; warnings: string[] } {
+export function sanitizeTasks(raw: unknown, previous: Task[] = []): { tasks: Task[]; warnings: string[] } {
   const warnings: string[] = [];
   if (!Array.isArray(raw)) return { tasks: [], warnings: ["task board missing or not a list; keep returning the full board"] };
   const seen = new Set<string>();
@@ -115,15 +139,24 @@ export function sanitizeTasks(raw: unknown): { tasks: Task[]; warnings: string[]
     const strings = (value: unknown) => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.trim() !== "").map(v => v.trim()) : [];
     const title = typeof t.title === "string" && t.title.trim() ? t.title.trim() : (warnings.push(`task ${id}: no title`), "(untitled)");
     let note = typeof t.note === "string" ? t.note.trim() : "";
+    let planStep: PlanStep | undefined;
+    try { planStep = readPlanStep(t.planStep); } catch { warnings.push(`task ${id}: invalid plan step; retain its saved parent`); }
     if (status === "blocked" && !note) { note = "(no reason given)"; warnings.push(`task ${id}: blocked without a reason`); }
     tasks.push({ id, kind, status, title, criterion: typeof t.criterion === "string" ? t.criterion.trim() : "",
-      covers: strings(t.covers), files: strings(t.files), note });
+      covers: strings(t.covers), files: strings(t.files), note, ...(planStep ? { planStep } : {}) });
   });
-  const ids = new Set(tasks.map(task => task.id));
+  const ids = new Set([...previous, ...tasks].map(task => task.id));
+  const steps = new Map<string, PlanStep>();
   for (const task of tasks) {
+    if (task.planStep) {
+      const known = steps.get(task.planStep.id);
+      if (known && known.title !== task.planStep.title) warnings.push(`plan step ${known.id}: keep one consistent title`);
+      if (known) task.planStep = known;
+      else steps.set(task.planStep.id, task.planStep);
+    }
     const dangling = task.covers.filter(ref => !ids.has(ref));
     if (dangling.length) { warnings.push(`task ${task.id} covers unknown tasks ${dangling.join(", ")}; dropped`); task.covers = task.covers.filter(ref => ids.has(ref)); }
-    if (task.kind === "test" && !task.covers.some(ref => tasks.find(x => x.id === ref)?.kind === "code")) warnings.push(`test task ${task.id} does not name the code task it proves`);
+    if (task.kind === "test" && !task.covers.some(ref => [...tasks, ...previous].find(x => x.id === ref)?.kind === "code")) warnings.push(`test task ${task.id} does not name the code task it proves`);
     if (task.kind === "infra" && !task.covers.length) warnings.push(`infra task ${task.id} does not name the task it unblocks`);
   }
   return { tasks, warnings };
@@ -143,11 +176,50 @@ export function boardComplete(tasks: Task[]): boolean {
 /** Next task to work: board order, code before the tests that prove it, and an
  * infra task only when the task it unblocks is itself next. */
 export function nextTask(tasks: Task[]): Task | undefined {
+  const active = tasks.find(task => task.status === "in_progress");
+  if (active) return active;
   const open = tasks.filter(task => task.status === "open");
   const candidate = open.find(task => task.kind !== "infra");
   if (!candidate) return open[0];
   const blocker = open.find(task => task.kind === "infra" && task.covers.includes(candidate.id));
   return blocker ?? candidate;
+}
+
+/** A partial model response must not erase saved work or parent identities. */
+export function preserveTaskHistory(previous: Task[] | null, reported: Task[]): { tasks: Task[]; warnings: string[] } {
+  if (!previous?.length) return { tasks: reported, warnings: [] };
+  const warnings: string[] = [];
+  const incoming = new Map(reported.map(task => [task.id, task]));
+  const tasks = previous.map(saved => {
+    const next = incoming.get(saved.id);
+    incoming.delete(saved.id);
+    if (!next) { warnings.push(`saved task ${saved.id} was omitted; retained its progress`); return saved; }
+    if (saved.planStep && next.planStep?.id !== saved.planStep.id) warnings.push(`saved task ${saved.id} keeps plan step ${saved.planStep.id}`);
+    return { ...next, ...(saved.planStep ? { planStep: saved.planStep } : {}), ...(saved.commits ? { commits: saved.commits } : {}) };
+  });
+  const merged = [...tasks, ...incoming.values()];
+  const parents = new Map(previous.filter(task => task.planStep).map(task => [task.planStep!.id, task.planStep!]));
+  for (const task of merged) {
+    if (!task.planStep) continue;
+    const parent = parents.get(task.planStep.id);
+    if (parent) task.planStep = parent;
+    else parents.set(task.planStep.id, task.planStep);
+  }
+  return { tasks: merged, warnings };
+}
+
+export function planSteps(tasks: Task[], working?: string): Array<PlanStep & { status: TaskStatus; tasks: Task[] }> {
+  const groups = new Map<string, PlanStep & { tasks: Task[] }>();
+  for (const task of tasks) {
+    if (!task.planStep) continue;
+    const group = groups.get(task.planStep.id) ?? { ...task.planStep, tasks: [] };
+    group.tasks.push(task); groups.set(group.id, group);
+  }
+  return [...groups.values()].map(group => ({ ...group, status:
+    group.tasks.every(task => task.status === "done") && !uncoveredCode(tasks).some(task => group.tasks.includes(task)) ? "done" :
+    group.tasks.some(task => task.id === working || task.status === "in_progress") ? "in_progress" :
+    group.tasks.some(task => task.status === "blocked") ? "blocked" :
+    group.tasks.some(task => task.status === "done") ? "in_progress" : "open" }));
 }
 
 export function describeTask(task: Task | undefined): string {
@@ -168,10 +240,11 @@ export function renderTaskBoard(tasks: Task[], options: { working?: string; head
     const all = tasks.filter(task => task.kind === kind);
     return `${kind} ${all.filter(task => task.status === "done").length}/${all.length}`;
   };
-  const mark = (task: Task) => task.status === "done" ? "☑" : task.status === "blocked" ? "⛔" : task === working ? "▶" : "☐";
+  const mark = (task: { status: TaskStatus }) => task.status === "done" ? "☑" : task.status === "blocked" ? "⛔" : task === working || task.status === "in_progress" ? "▶" : "☐";
   const groups = new Map<string, Task[]>();
+  const steps = planSteps(tasks, options.working);
   for (const task of tasks) {
-    const key = task.criterion || "general";
+    const key = task.planStep ? `plan:${task.planStep.id}` : task.criterion || "general";
     groups.set(key, [...(groups.get(key) ?? []), task]);
   }
   // The live comment and UI add their own "Task checklist" heading (#6961), so
@@ -180,7 +253,8 @@ export function renderTaskBoard(tasks: Task[], options: { working?: string; head
   const lines = [...(heading ? [heading, ""] : []),
     `${count("code")} · ${count("test")} · ${count("infra")}${working ? ` · ▶ now working: ${describeTask(working)}${options.since ? ` (since ${options.since})` : ""}` : options.working ? ` · now working: ${options.working}` : ""}`, ""];
   for (const [criterion, group] of groups) {
-    lines.push(`**${criterion}**`);
+    const step = steps.find(item => `plan:${item.id}` === criterion);
+    lines.push(step ? `**${mark(step)} Plan \`${step.id}\` — ${step.title}**` : `**${criterion}**`);
     for (const task of group) {
       const covers = task.covers.length ? ` (covers ${task.covers.join(", ")})` : "";
       const note = task.note ? ` — ${task.note}` : "";
@@ -276,7 +350,11 @@ export function taskBoardPath(issue: number): string {
   return `.adp/tasks/${issue}.json`;
 }
 
-export interface TaskBoardFile { version: 1; issue: number; updated_at: string; tasks: Task[] }
+export interface TaskBoardFile {
+  version: 1; issue: number; updated_at: string; tasks: Task[];
+  /** Materialized parent view, regenerated from children at every checkpoint. */
+  plan?: Array<PlanStep & { status: TaskStatus; taskIds: string[]; completed: number; total: number }>;
+}
 
 /** Read and validate the branch board. Unreadable or invalid content is reported
  * as null, never trusted: the model has shell access to this file. */
@@ -296,9 +374,13 @@ export async function writeTaskBoardFile(workspace: string, issue: number, tasks
   const path = taskBoardPath(issue);
   await mkdir(join(workspace, ".adp", "tasks"), { recursive: true });
   const ordered = tasks.map(task => ({ id: task.id, kind: task.kind, criterion: task.criterion, title: task.title, status: task.status,
-    covers: task.covers, files: task.files, note: task.note, ...(task.commits?.length ? { commits: task.commits } : {}) }));
-  const file: TaskBoardFile = { version: 1, issue, updated_at: now.toISOString(), tasks: ordered };
-  await writeFile(join(workspace, path), `${JSON.stringify(file, null, 2)}\n`, "utf8");
+    covers: task.covers, files: task.files, note: task.note, ...(task.planStep ? { planStep: task.planStep } : {}), ...(task.commits?.length ? { commits: task.commits } : {}) }));
+  const plan = planSteps(tasks).map(step => ({ id: step.id, title: step.title, status: step.status,
+    taskIds: step.tasks.map(task => task.id), completed: step.tasks.filter(task => task.status === "done").length, total: step.tasks.length }));
+  const file: TaskBoardFile = { version: 1, issue, updated_at: now.toISOString(), ...(plan.length ? { plan } : {}), tasks: ordered };
+  const target = join(workspace, path);
+  await writeFile(`${target}.tmp`, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+  await rename(`${target}.tmp`, target);
   return path;
 }
 

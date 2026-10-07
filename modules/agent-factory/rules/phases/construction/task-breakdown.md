@@ -21,6 +21,24 @@ notes on the next turn. Follow the rule so those notes stay empty.
 
 ## Step 1: Derive the skeleton from the acceptance criteria
 
+Start with a human-readable implementation plan: stable parent steps explaining
+the behavior the user will gain. Group the detailed tasks below those steps.
+For the structured board, every child carries `planStep: { id, title }`; children
+of the same parent reuse both values. Parent titles use plain language, not
+acceptance IDs, file paths or internal shorthand. Keep acceptance IDs on the
+detailed children, which may span several criteria within one logical step.
+Parent status is derived from its children and their required validation.
+The UI shows parent steps first and lets the reader expand their details.
+
+The canonical saved board is `.adp/tasks/<issue-number>.json` on the story
+branch. In the Codex developer/reviewer runtime, the controller commits and
+pushes it at checkpoints. Its `plan` lists the human-readable parent steps,
+their child IDs and calculated progress; `tasks` holds the detailed work,
+status, evidence and parent links. The UI and run records are views of these
+checkpoints, not separate editable plans. Restore this file before replanning
+on a retry. Parent totals are regenerated from the children; never edit them
+independently or infer completion merely from a PR merge.
+
 Read the issue's Validation table (stable IDs such as `AC-01`) or its bold
 criterion markers (such as `DATA01`). For **each** acceptance ID, the board gets:
 
@@ -69,3 +87,7 @@ Do not mark a task done to shorten the list, do not merge tasks to hide
 scope, and do not add tasks that serve no acceptance ID. When a previous process
 left a board in the branch, it is the plan: keep its ids, resume at the first
 open task, and change the skeleton only for a reason you state in the task note.
+Resume an in-progress task before starting a new one. Retain the parent links,
+completed tasks, evidence and blocked tasks. Add the two-level grouping to an
+older flat board without resetting its progress. Persist the active child and
+every completed checkpoint through the runtime's existing board mechanism.

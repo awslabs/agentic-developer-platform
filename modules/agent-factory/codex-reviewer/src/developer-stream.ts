@@ -62,7 +62,16 @@ export async function runDeveloperStream(
       let usage: RunResult['usage'] = null;
       const streamReporter = scopedProgress(reporter);
       for await (const event of events) {
-        if (!(structured && 'item' in event && event.item.type === 'agent_message')) publishDeveloperEvent(event, streamReporter);
+        if (structured && 'item' in event && event.item.type === 'agent_message') {
+          // Buffer structured-turn messages until complete so fragments of the
+          // final JSON never leak, while ordinary human explanations stay visible.
+          if (event.type === 'item.completed' && !/^\s*(?:[\[{]|```)/.test(event.item.text)) publishDeveloperEvent(event, streamReporter);
+          else streamReporter.observeEvent?.(event);
+        } else if (structured && 'item' in event && event.item.type === 'todo_list') {
+          // Native scratch plans must not replace the durable assignment board.
+          publishDeveloperEvent(event, { ...streamReporter, progress: (text, detail) =>
+            streamReporter.progress?.(text, { ...detail, plan_scope: 'inspection' }) });
+        } else publishDeveloperEvent(event, streamReporter);
         if (event.type === 'item.completed') {
           items.push(event.item);
           if (event.item.type === 'agent_message') finalResponse = event.item.text;

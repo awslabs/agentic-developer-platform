@@ -25,3 +25,11 @@ describe('live task board', () => {
     expect(mentionsTask(event('WSxc1'), 'WS.c1')).toBe(false);
   });
 });
+
+it('reads stable parent metadata and keeps an unfinished parent incomplete', async () => {
+  const { implementationSteps } = await import('@/utils/liveTasks');
+  const tasks = parseLiveTasks('**⛔ Plan `recover` — Keep conversations after disconnects**\n- ☑ `code` A-c1 — Save conversation\n- ⛔ `test` A-t1 — Await live target')!;
+  expect(tasks[0].planStep?.id).toBe('recover');
+  expect(implementationSteps(tasks)[0]).toMatchObject({ id: 'recover', completed: 1, status: 'blocked' });
+  expect(implementationSteps(tasks.slice(0, 1))[0].status).not.toBe('completed');
+});
