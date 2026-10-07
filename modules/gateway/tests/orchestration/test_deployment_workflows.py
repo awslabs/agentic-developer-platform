@@ -138,9 +138,17 @@ async def action(ctx):
         return await db.scalar(select(OrchestrationAction).where(OrchestrationAction.kind == WORKFLOW_KIND))
 
 
-async def test_automatic_workflow_adopted_without_second_dispatch(deployment):
+@pytest.mark.parametrize("transport", ["github", "s3"])
+async def test_automatic_workflow_adopted_without_second_dispatch(deployment, transport):
     ctx = deployment
-    ctx.runs.append(ctx.make_run())
+    run = ctx.make_run()
+    if transport == "s3":
+        run = replace(
+            run,
+            artifact_id=None,
+            artifact_ref="s3://adp-dev-deployment-evidence-123456789012/deployment-evidence/v1/123/42/1/context/gateway-deploy.yml.json?versionId=original",
+        )
+    ctx.runs.append(run)
     first = await tick(ctx)
     assert first.effects_succeeded == 1, (first, (await state(ctx))[0].block_detail, (await action(ctx)).detail if await action(ctx) else None)
     await tick(ctx)
@@ -149,6 +157,7 @@ async def test_automatic_workflow_adopted_without_second_dispatch(deployment):
     assert ctx.dispatches == []
     receipt = WorkflowReceipt.model_validate((await action(ctx)).detail["workflow_receipt"])
     assert receipt.run_id == 42 and receipt.source_revision == SOURCE
+    assert receipt.artifact_id == run.artifact_id and receipt.artifact_ref == run.artifact_ref
     async with ctx.factory() as db:
         lease = await db.scalar(select(OrchestrationEnvironmentLease))
         assert lease.owner_action_id == receipt.lease_holder_action_id

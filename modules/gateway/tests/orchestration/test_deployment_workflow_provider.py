@@ -302,3 +302,45 @@ async def test_github_gzip_response_is_decoded_once_and_keeps_response_metadata(
         assert int(response.headers["content-length"]) == len(payload)
         with pytest.raises(CycleBlockedError, match="deployment_provider_response_limit"):
             await provider.request(None, "GET", "/repos/org/repo", token="test-token", max_bytes=len(payload) - 1)
+
+
+async def test_s3_definition_uses_signed_store_without_github_artifact_quota(provider):
+    ctx = provider
+    ctx.definition = replace(ctx.definition, evidence_transport="s3-oidc-v1")
+    reads = []
+    reference = "s3://adp-dev-deployment-evidence-123456789012/deployment-evidence/v1/17/42/1/context/gateway-deploy.yml.json?versionId=one"
+
+    def read(**expected):
+        reads.append(expected)
+        payload = json.dumps(ctx.document).encode()
+        return payload, hashlib.sha256(payload).hexdigest(), reference
+
+    ctx.provider.evidence_store = SimpleNamespace(read=read)
+    run, incomplete = await observe(ctx)
+    assert not incomplete and run.artifact_id is None and run.artifact_ref == reference
+    assert reads[0]["repository_id"] == 17 and reads[0]["attempt"] == 1
+    assert reads[0]["workflow_revision"] == SOURCE
+    assert not any("/artifacts" in path for _, path in ctx.calls)
+
+
+async def test_s3_signature_failure_cannot_fall_back_to_github_artifact(provider):
+    ctx = provider
+    ctx.definition = replace(ctx.definition, evidence_transport="s3-oidc-v1")
+
+    def read(**expected):
+        raise ValueError("invalid signature; sensitive content")
+
+    ctx.provider.evidence_store = SimpleNamespace(read=read)
+    with pytest.raises(CycleBlockedError, match="deployment_s3_evidence_unverifiable") as caught:
+        await observe(ctx)
+    assert "sensitive" not in str(caught.value)
+    assert not any("/artifacts" in path for _, path in ctx.calls)
+
+
+async def test_s3_payload_must_match_verified_run(provider):
+    ctx = provider
+    ctx.definition = replace(ctx.definition, evidence_transport="s3-oidc-v1")
+    ctx.document["run_id"] = 99
+    ctx.provider.evidence_store = SimpleNamespace(read=lambda **_: (json.dumps(ctx.document).encode(), "a" * 64, "s3://version"))
+    with pytest.raises(CycleBlockedError, match="deployment_context_identity_mismatch"):
+        await observe(ctx)

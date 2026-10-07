@@ -22,23 +22,44 @@ class ReleaseProvider(WorkflowProvider):
             raise CycleBlockedError("deployment_newer_release_does_not_contain_merge")
 
     async def release(self, binding, run, component):
-        name = f"adp-release-{component}-{run.run_attempt}"
-        rows = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run.run_id}/artifacts", "artifacts")
-        matches = [row for row in rows if row.get("name") == name and not row.get("expired")]
-        if len(matches) != 1:
-            raise CycleBlockedError("deployment_release_artifact_missing_or_ambiguous")
-        artifact = matches[0]
-        if not 0 < artifact.get("size_in_bytes", 0) <= MAX_ARCHIVE_BYTES:
-            raise CycleBlockedError("deployment_release_artifact_size_invalid")
-        response = await self.request(binding, "GET", f"/repos/{binding.repo}/actions/artifacts/{int(artifact['id'])}/zip", follow_redirects=True)
-        digest = hashlib.sha256(response.content).hexdigest()
-        if artifact.get("digest") != "sha256:" + digest:
-            raise CycleBlockedError("deployment_release_artifact_digest_mismatch")
-        with zipfile.ZipFile(io.BytesIO(response.content)) as zipped:
-            entries = zipped.infolist()
-            if len(entries) != 1 or entries[0].filename != "release.json" or entries[0].file_size > MAX_CONTEXT_BYTES:
-                raise CycleBlockedError("deployment_release_archive_invalid")
-            release = ReleaseArtifact.model_validate_json(zipped.read(entries[0]))
+        context = run.context
+        if getattr(run, "artifact_ref", None) is not None:
+            result = await self.s3_evidence(
+                account=context.account_id,
+                environment=context.inputs.get("environment", "dev"),
+                region=context.region,
+                repository=binding.repo,
+                repository_id=binding.provider_repository_id,
+                run_id=run.run_id,
+                attempt=run.run_attempt,
+                kind="release",
+                name=component,
+                workflow_path=context.workflow_path,
+                workflow_revision=context.workflow_revision,
+            )
+            if result is None:
+                raise CycleBlockedError("deployment_release_artifact_missing_or_ambiguous")
+            payload, digest, reference = result
+            release = ReleaseArtifact.model_validate_json(payload)
+        else:
+            name = f"adp-release-{component}-{run.run_attempt}"
+            rows = await self.pages(binding, f"/repos/{binding.repo}/actions/runs/{run.run_id}/artifacts", "artifacts")
+            matches = [row for row in rows if row.get("name") == name and not row.get("expired")]
+            if len(matches) != 1:
+                raise CycleBlockedError("deployment_release_artifact_missing_or_ambiguous")
+            artifact = matches[0]
+            if not 0 < artifact.get("size_in_bytes", 0) <= MAX_ARCHIVE_BYTES:
+                raise CycleBlockedError("deployment_release_artifact_size_invalid")
+            response = await self.request(binding, "GET", f"/repos/{binding.repo}/actions/artifacts/{int(artifact['id'])}/zip", follow_redirects=True)
+            digest = hashlib.sha256(response.content).hexdigest()
+            if artifact.get("digest") != "sha256:" + digest:
+                raise CycleBlockedError("deployment_release_artifact_digest_mismatch")
+            with zipfile.ZipFile(io.BytesIO(response.content)) as zipped:
+                entries = zipped.infolist()
+                if len(entries) != 1 or entries[0].filename != "release.json" or entries[0].file_size > MAX_CONTEXT_BYTES:
+                    raise CycleBlockedError("deployment_release_archive_invalid")
+                release = ReleaseArtifact.model_validate_json(zipped.read(entries[0]))
+            reference = f"github/actions/runs/{run.run_id}/artifacts/{int(artifact['id'])}"
         context = run.context
         fields = (
             "repository_id",
@@ -55,4 +76,4 @@ class ReleaseProvider(WorkflowProvider):
             raise CycleBlockedError("deployment_release_artifact_identity_mismatch")
         if release.produced_at > datetime.now(UTC) + timedelta(seconds=30):
             raise CycleBlockedError("deployment_release_artifact_time_invalid")
-        return release, digest, f"github/actions/runs/{run.run_id}/artifacts/{int(artifact['id'])}"
+        return release, digest, reference

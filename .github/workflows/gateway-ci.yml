@@ -9,6 +9,8 @@ on:
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      - 'modules/gateway/deployment_evidence/**'
+      - 'modules/gateway/scripts/publish-deployment-evidence.py'
       # Gateway stages the canonical harness decoder into its image.
       - 'modules/harness/jobs/harness_jobs/identity.py'
       - 'modules/gateway/scripts/stage-contracts.sh'
@@ -112,6 +114,8 @@ on:
       - 'platform/scripts/adversarial-test-assert.py'
       - 'platform/scripts/adversarial-e2e-config.json'
       - 'modules/gateway/src/**'
+      - 'modules/gateway/deployment_evidence/**'
+      - 'modules/gateway/scripts/publish-deployment-evidence.py'
       # Gateway stages the canonical harness decoder into its image.
       - 'modules/harness/jobs/harness_jobs/identity.py'
       - 'modules/gateway/scripts/stage-contracts.sh'
@@ -178,8 +182,8 @@ jobs:
       - name: Run Ruff
         working-directory: modules/gateway
         run: |
-          ruff check src/ tests/ pricing_policy/
-          ruff format --check src/ tests/ pricing_policy/
+          ruff check src/ tests/ pricing_policy/ deployment_evidence/
+          ruff format --check src/ tests/ pricing_policy/ deployment_evidence/
 
       # Issue #5420 (PMM-03): the gateway serves the persona catalogue from a
       # generated staged copy (src/admin/persona_models/_personas.py) of the

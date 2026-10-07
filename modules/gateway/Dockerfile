@@ -78,6 +78,7 @@ COPY security/stdlib /opt/gateway-stdlib-security/
 RUN python /opt/gateway-stdlib-security/apply.py --verify-only --manifest-file manifest-3.13.16.json \
     && python /opt/gateway-stdlib-security/check.py
 COPY src/ src/
+COPY deployment_evidence/ deployment_evidence/
 # Issue #4969: the shared Bedrock pricing policy and its immutable rate snapshots.
 # src/budget and src/proxy import it at request time, and the migration seed in
 # alembic/ is validated against the same snapshot files, so the package (including
