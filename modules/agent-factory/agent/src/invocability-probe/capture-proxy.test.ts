@@ -85,6 +85,28 @@ describe('Bedrock request capture proxy', () => {
     }
   });
 
+  it.each(['invoke', 'invoke-with-response-stream'])('forwards the configured model URL for %s regardless of captured encoding', async operation => {
+    const modelId = 'arn:aws:bedrock:us-east-1:123456789012:inference-profile/selected-model';
+    const canonicalPath = `/model/${encodeURIComponent(modelId)}/${operation}`;
+    let receivedPath = '';
+    const fake = await upstream((request, response) => {
+      receivedPath = request.url ?? '';
+      response.writeHead(200).end('{}');
+    });
+    const proxy = await startCaptureProxy({ modelId, region: 'us-east-1', credentials, upstreamBaseUrl: fake.origin });
+    try {
+      // Equivalent escaping is accepted, but the outbound URL comes from the
+      // gateway configuration rather than copying the captured path spelling.
+      const capturedPath = canonicalPath.replace(/%3A/g, '%3a').replace(/%2F/g, '%2f');
+      expect(await postRequestTarget(proxy.baseUrl, `http://untrusted.example${capturedPath}`)).toBe(200);
+      expect(receivedPath).toBe(canonicalPath);
+      expect((await proxy.captured()).path).toBe(canonicalPath);
+    } finally {
+      await proxy.close();
+      await fake.close();
+    }
+  });
+
   it('does not follow a provider redirect to a second origin', async () => {
     let targetCalls = 0;
     const target = await upstream((_request, response) => {
@@ -194,6 +216,8 @@ describe('Bedrock request capture proxy', () => {
         method: 'POST', body: '{}',
       });
       expect(queryResponse.status).toBe(403);
+      expect(await postRequestTarget(proxy.baseUrl, '/model/selected-model/invoke#fragment')).toBe(403);
+      expect(await postRequestTarget(proxy.baseUrl, '/..//untrusted.example/model/selected-model/invoke')).toBe(403);
       expect(proxy.snapshot()).toBeNull();
     } finally {
       await proxy.close();

@@ -94,6 +94,12 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
     throw new Error('Bedrock upstream must be an origin without a path, query or fragment');
   }
 
+  // Construct destinations from trusted configuration before accepting any request.
+  // Captured URL text may select an operation, but never supplies a forwarding URL.
+  const modelPath = `/model/${encodeURIComponent(options.modelId)}`;
+  const invokeUrl = resolveProviderUrl(`${modelPath}/invoke`, upstream);
+  const streamUrl = resolveProviderUrl(`${modelPath}/invoke-with-response-stream`, upstream);
+
   const signer = new SignatureV4({
     credentials: options.credentials,
     region: options.region,
@@ -125,7 +131,7 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
         return;
       }
       const requestUrl = new URL(request.url, 'http://127.0.0.1');
-      if (requestUrl.search || modelFromPath(requestUrl.pathname) !== options.modelId) {
+      if (requestUrl.search || requestUrl.hash || modelFromPath(requestUrl.pathname) !== options.modelId) {
         response.writeHead(403).end('request does not match the Gateway-selected model');
         return;
       }
@@ -149,7 +155,8 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
       const body = Buffer.concat(chunks);
       const digest = requestShapeSha256(body);
       options.onCapturedBody?.(JSON.parse(body.toString('utf8')) as unknown);
-      const path = requestUrl.pathname + requestUrl.search;
+      const providerUrl = requestUrl.pathname.endsWith('/invoke-with-response-stream') ? streamUrl : invokeUrl;
+      const path = providerUrl.pathname;
 
       if (options.expectedRequestShapeSha256 && digest !== options.expectedRequestShapeSha256) {
         settle({
@@ -192,18 +199,8 @@ export async function startCaptureProxy(options: CaptureProxyOptions): Promise<C
         providerErrorCode: 'provider_response_indeterminate',
         forwarded: true,
       };
-      // Resolve and assert the destination here rather than trusting the model check
-      // above to have constrained it. A captured target containing dot segments (e.g.
-      // "/..//host/model/m/invoke") yields a pathname starting with "//", which
-      // new URL(path, upstream) reads as a host and silently retargets the forward.
-      // The model check rejects that shape today, but only incidentally; this keeps the
-      // guarantee local to the call that carries the signed Bedrock credentials.
-      const providerUrl = resolveProviderUrl(path, upstream);
-      // providerUrl is asserted above to share the Bedrock upstream origin, which is
-      // derived from the Gateway-supplied region (bedrockEndpoint validates its charset)
-      // and never from the captured request. redirect:'error' keeps the SigV4 credentials
-      // from following a relocation (#5603).
-      // nosemgrep: tmp.gitlab.nodejs_scan.javascript-ssrf-rule-node_ssrf
+      // The destination was constructed from configuration, not captured URL text.
+      // Reject redirects so signed credentials cannot follow a relocation.
       const providerResponse = await fetch(providerUrl, {
         method: 'POST',
         headers: signed.headers as Record<string, string>,
