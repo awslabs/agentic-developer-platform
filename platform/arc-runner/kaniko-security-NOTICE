@@ -1,6 +1,0 @@
-Kaniko v1.28.5 from osscontainertools/kaniko, upstream commit
-9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c.
-ADP rebuild uses Go 1.26.8 with the committed dependency patch upgrading
-golang.org/x/crypto to v0.57.0 and its resolved x/term and x/text dependencies.
-Credential helpers and certificates come from the digest-pinned signed release.
-The executor retains its upstream Apache-2.0 license.
