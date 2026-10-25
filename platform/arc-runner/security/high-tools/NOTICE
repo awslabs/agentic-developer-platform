@@ -1,8 +1,7 @@
 ADP security rebuilds of upstream tools, 2026-09-27.
 Exact source commits and reviewed dependency patches: source-lock.json.
 
-Buildx 0.37.1 (Apache-2.0), Helm 3.22.0 (Apache-2.0),
-runc 1.4.3 (Apache-2.0), osscontainertools/docker-credential-acr (Apache-2.0).
+Buildx 0.37.1 (Apache-2.0), Helm 3.22.0 (Apache-2.0), runc 1.4.3 (Apache-2.0).
 Go toolchain 1.26.8. The build retains upstream tool behavior and upgrades
 vulnerable Go modules. Upstream license texts are copied into the final image.
 
