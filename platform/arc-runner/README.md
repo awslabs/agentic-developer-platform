@@ -15,7 +15,7 @@ Added tooling:
 - **IaC:** Terraform 1.14.9 (ADP security rebuild with Go 1.26.8 and pinned dependencies)
 - **K8s:** kubectl 1.35.9, Helm 3.22.0 (archive checksum verified)
 - **Git/GitHub:** git, gh CLI
-- **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko 1.28.5 (ADP security rebuild; daemonless image builds)
+- **Container:** Docker CLI (for ECR login/push; no DinD daemon), Kaniko 1.29.0 (daemonless image builds)
 - **Utilities:** zip, unzip, jq, curl, wget, sudo
 
 ## Build + push (CI)
@@ -74,15 +74,10 @@ Refresh the patch from the pinned upstream commit when updating dependencies;
 review the complete resolved graph and run isolated lifecycle and upstream
 compatibility tests before publishing. Runner rollout is a separate operation.
 
-## Kaniko security rebuild
+## Kaniko
 
-The maintained `osscontainertools/kaniko` v1.28.5 release supplies credential
-helpers and certificates from its digest-pinned image. A separate Go 1.26.8
-builder checks out the exact upstream commit and applies
-`kaniko-security-dependencies.patch`, updating x/crypto to 0.57.0 and its
-resolved dependencies. Module verification and checksum guards prevent
-compilation from silently changing the reviewed graph. The rebuilt executor
-ships with the upstream license and an ADP modification notice.
+The executor, credential helpers, certificates and licenses come from the
+digest-pinned, signed `osscontainertools/kaniko` v1.29.0 release.
 
 Telemetry remains disabled unless explicitly configured through Kaniko's
 telemetry endpoint setting. Image publication and runner rollout require
@@ -118,8 +113,7 @@ for a canary workflow before runner rollout.
 
 The image keeps Docker daemon, containerd, runc, Buildx, Kaniko, Helm, Terraform,
 and credential helpers. It updates Docker to 29.8.1 and containerd to 2.4.1,
-rebuilds Buildx 0.37.1, runc 1.4.3, Helm 3.22.0 and the ACR helper with fixed
-Go dependencies, and builds AWS CLI 2.37.4 with Python 3.14.7 and statically linked Expat 2.8.5. The exact Python XML adapters
+rebuilds Buildx 0.37.1, runc 1.4.3 and Helm 3.22.0 with fixed Go dependencies, and builds AWS CLI 2.37.4 with Python 3.14.7 and statically linked Expat 2.8.5. The exact Python XML adapters
 are supplied by a small immutable build artifact; ordinary valid/invalid XML
 is tested through the real AWS CLI against a local HTTP fixture. Source commits,
 dependency patches and download hashes are committed next to the Dockerfile.

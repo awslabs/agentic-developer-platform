@@ -33,26 +33,7 @@ RUN git apply --check /tmp/terraform-security-dependencies.patch \
         -o /out/terraform . \
     && sha256sum -c /tmp/terraform-modules.sha256
 
-# Signed maintained Kaniko release; rebuild only executor with reviewed dependencies.
-FROM ghcr.io/osscontainertools/kaniko:v1.28.5@sha256:738807f0e31daf07743f89260a95956dcc6ee4f62553f4f6344c990cabab8675 AS kaniko-release
-FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS kaniko-build
-ENV GOTOOLCHAIN=local CGO_ENABLED=0
-WORKDIR /src
-RUN git init . \
-    && git remote add origin https://github.com/osscontainertools/kaniko.git \
-    && git fetch --depth=1 origin 9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c \
-    && git checkout --detach FETCH_HEAD \
-    && test "$(git rev-parse HEAD)" = 9c3dcc112b7a71bed4de3bc8c4ed089ef98cbf0c
-COPY kaniko-security-dependencies.patch /tmp/kaniko-security-dependencies.patch
-RUN git apply --check /tmp/kaniko-security-dependencies.patch \
-    && git apply /tmp/kaniko-security-dependencies.patch \
-    && sha256sum go.mod go.sum > /tmp/kaniko-modules.sha256 \
-    && go mod download \
-    && go mod verify \
-    && go build -mod=readonly -p 1 -buildvcs=false -trimpath \
-        -ldflags "-s -w -X github.com/osscontainertools/kaniko/pkg/version.version=v1.28.5" \
-        -o /out/executor ./cmd/executor \
-    && sha256sum -c /tmp/kaniko-modules.sha256
+FROM ghcr.io/osscontainertools/kaniko:v1.29.0@sha256:0c0b6c02991bba44090fad918ae177d193e1bd3fd0ccc643e7cc1f9f1a5a373d AS kaniko-release
 
 # Rebuild bundled tools with fixed Go dependencies, keeping reviewed source pins.
 FROM public.ecr.aws/docker/library/golang:1.26.8-trixie@sha256:bdca99a00bc16590cb1a0bb4e698f5fc5d6a64e4d5eef13d9f18a0ee08e5fa65 AS high-tools-build
@@ -79,16 +60,6 @@ RUN git init . && git remote add origin https://github.com/helm/helm.git \
     && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
         -ldflags "-s -w -X helm.sh/helm/v3/internal/version.version=v3.22.0" -o /out/helm ./cmd/helm \
     && sha256sum -c /tmp/helm-modules.sha256
-WORKDIR /src/acr
-RUN git init . && git remote add origin https://github.com/osscontainertools/docker-credential-acr.git \
-    && git fetch --depth=1 origin 726f4811d1f2da429555fce4c1868c1a7be96f19 && git checkout --detach FETCH_HEAD \
-    && test "$(git rev-parse HEAD)" = 726f4811d1f2da429555fce4c1868c1a7be96f19 \
-    && git apply --check /patches/acr.patch && git apply /patches/acr.patch \
-    && sha256sum go.mod go.sum > /tmp/acr-modules.sha256 \
-    && go mod download && go mod verify \
-    && go build -mod=readonly -p 1 -trimpath -buildvcs=false \
-        -ldflags "-s -w" -o /out/docker-credential-acr-env . \
-    && sha256sum -c /tmp/acr-modules.sha256
 WORKDIR /src/runc
 RUN git init . && git remote add origin https://github.com/opencontainers/runc.git \
     && git fetch --depth=1 origin bb14dabeb7185bb72c8c86735d090dcb20f36587 && git checkout --detach FETCH_HEAD \
@@ -247,12 +218,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && docker --version
 
 # ── Kaniko executor (daemonless container builds; no Docker daemon needed) ──
-# Maintained v1.28.5 helpers plus executor rebuilt with patched dependencies.
-# Keep the release digest and exact source commit aligned.
 COPY --from=kaniko-release /kaniko /kaniko
-COPY --from=kaniko-build /out/executor /kaniko/executor
-COPY --from=kaniko-build /src/LICENSE /usr/local/share/licenses/kaniko/LICENSE
-COPY kaniko-security-NOTICE /usr/local/share/licenses/kaniko/NOTICE
 RUN chmod -R 777 /kaniko
 ENV PATH="/kaniko:${PATH}"
 
@@ -265,10 +231,8 @@ RUN tar -xzf /tmp/docker.tgz -C /tmp \
     && install -m 0755 /tmp/containerd/bin/* /usr/bin/
 COPY --from=high-tools-build /out/runc /usr/bin/runc
 COPY --from=high-tools-build /out/buildx /usr/local/lib/docker/cli-plugins/docker-buildx
-COPY --from=high-tools-build /out/docker-credential-acr-env /kaniko/docker-credential-acr-env
 COPY --from=high-tools-build /src/buildx/LICENSE /usr/local/share/licenses/buildx/LICENSE
 COPY --from=high-tools-build /src/runc/LICENSE /usr/local/share/licenses/runc/LICENSE
-COPY --from=high-tools-build /src/acr/LICENSE /usr/local/share/licenses/docker-credential-acr/LICENSE
 COPY security/high-tools/source-lock.json security/high-tools/NOTICE /usr/local/share/licenses/adp-tools/
 COPY security/high-tools/docker-LICENSE /usr/local/share/licenses/docker/LICENSE
 COPY security/high-tools/containerd-LICENSE /usr/local/share/licenses/containerd/LICENSE
