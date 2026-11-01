@@ -57,7 +57,7 @@ jobs:
       CODEBUILD_PROJECT: ${{ vars.ADP_TOOLS_CODEBUILD_PROJECT }}
       ARTIFACT_KEY: codebuild/artifacts/shared-agentcore-tools/${{ github.run_id }}-${{ github.run_attempt }}.env
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_sha }}
           persist-credentials: false
@@ -104,7 +104,7 @@ jobs:
           [[ "$(aws sts get-caller-identity --query Account --output text)" == "$EXPECTED_AWS_ACCOUNT_ID" ]]
           [[ "$(aws codebuild batch-get-projects --names "$CODEBUILD_PROJECT" --region "$AWS_REGION" --query 'length(projects)' --output text)" == 1 ]]
           command -v aws && command -v jq
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.8'
           terraform_wrapper: false

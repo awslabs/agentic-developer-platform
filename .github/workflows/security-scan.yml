@@ -82,7 +82,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -109,7 +109,7 @@ jobs:
           python3 modules/gateway/scripts/repository-scan-receipt.py
 
       - name: Upload authenticated context
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-security-scan.yml-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-deployment-context/deployment-context.json
@@ -136,7 +136,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -187,7 +187,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -250,7 +250,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -339,7 +339,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -478,7 +478,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -574,7 +574,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -638,7 +638,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -780,7 +780,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -856,7 +856,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -952,7 +952,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -1003,7 +1003,7 @@ jobs:
 
       - name: Upload cleanup evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-repository-scan-cleanup-${{ github.run_attempt }}
           path: cleanup.json
@@ -1038,7 +1038,7 @@ jobs:
           fetch-depth: 1
 
       - name: Establish scoped on-demand scan identity
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-scan@f687f1e59a544429a1ee9bb994931abdc554cb74
         with:
           role_arn: ${{ vars.ADP_SCAN_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
@@ -1146,7 +1146,7 @@ jobs:
           cp -R scanner-evidence/syft/provenance "$RECEIPT_EVIDENCE/syft/"
 
       - name: Upload typed scan receipt
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-repository-scan-${{ github.run_attempt }}
           path: ${{ runner.temp }}/adp-repository-scan/
@@ -1175,7 +1175,7 @@ jobs:
             --correlation "$ADP_CORRELATION"
 
       - name: Upload sanitized reconciliation
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: security-reconciliation-${{ github.run_attempt }}
           path: security-reconciliation.json

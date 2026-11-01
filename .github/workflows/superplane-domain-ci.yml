@@ -537,7 +537,7 @@ jobs:
         if: ${{ matrix.component == 'controller' || matrix.component == 'monitor' }}
         # Match the maintained controller toolchain; patched x/net requires Go 1.25+.
         # Install it explicitly instead of downloading a second toolchain during tests.
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.8'
           cache-dependency-path: |
@@ -613,7 +613,7 @@ jobs:
 
       - name: Set up Node for Superplane UI
         if: ${{ matrix.component == 'ui' }}
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -727,7 +727,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.8'
           cache-dependency-path: modules/domain-apps/superplane/src/superplane-controller/go.sum
