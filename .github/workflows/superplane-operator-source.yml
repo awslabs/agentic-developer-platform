@@ -65,7 +65,7 @@ jobs:
           cat "$RUNNER_TEMP/operator-source-receipt.json" >> "$GITHUB_STEP_SUMMARY"
       - name: Retain metadata receipt only
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: superplane-operator-source-receipt
           path: ${{ runner.temp }}/operator-source-receipt.json
