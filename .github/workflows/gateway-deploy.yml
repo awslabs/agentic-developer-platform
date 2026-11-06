@@ -1868,7 +1868,7 @@ jobs:
         with:
           role_arn: ${{ vars.ADP_DEPLOY_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install generated-fixture test dependencies

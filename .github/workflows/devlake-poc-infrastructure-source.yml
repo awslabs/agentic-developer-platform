@@ -32,10 +32,10 @@ jobs:
       ADP_DEVLAKE_PUBLISH_ROLE: ${{ vars.ADP_DEVLAKE_PUBLISH_ROLE }}
       ADP_DEVLAKE_CONNECTION_LABEL: ${{ secrets.ADP_DEVLAKE_FINALIZE_CONNECTION_LABEL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: |
@@ -51,7 +51,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       # source_reader.approved_reader consumes this exact finalized cleanup handoff.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: inputs.phase == 'finalized'
         with:
           name: devlake-infrastructure-finalized-${{ github.run_id }}-${{ github.run_attempt }}

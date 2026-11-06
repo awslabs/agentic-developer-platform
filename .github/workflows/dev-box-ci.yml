@@ -52,8 +52,8 @@ jobs:
   module:
     runs-on: arc-runner-org
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Test release and image fixtures
@@ -85,7 +85,7 @@ jobs:
           # tests/cloud_desktop shadows that suite's own `database` fixture (every host-enrollment
           # fixture then answers 403). Same env, separate interpreter; new suites should also avoid the name.
           env -u AWS_PROFILE -u AWS_CONFIG_FILE -u AWS_DEFAULT_PROFILE -u AWS_SHARED_CREDENTIALS_FILE AWS_EC2_METADATA_DISABLED=true AWS_ACCESS_KEY_ID=offline-test AWS_SECRET_ACCESS_KEY=offline-test PYTHONPATH=modules/gateway:modules/user-services/dev-box:. python -m pytest -q modules/user-services/dev-box/tests/test_controller_checkpoint.py modules/user-services/dev-box/tests/test_controller_resume.py modules/user-services/dev-box/tests/test_controller_generation_pins.py modules/user-services/dev-box/tests/test_controller_dashboard_origin.py modules/user-services/dev-box/tests/test_controller_run_activation.py
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.9.8'
       - name: Validate private infrastructure with mock provider

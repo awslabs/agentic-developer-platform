@@ -100,17 +100,17 @@ jobs:
       STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
       PLAN_ROLE_ARN: ${{ vars.ADP_TOOLS_PLAN_ROLE_ARN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.26.1'
           cache: false
       - name: Validate tools workflow expressions and context availability
         # actionlint 1.7.12 predates GitHub's queue field; validate that field below.
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -ignore '^unexpected key "queue" for "concurrency" section\.' -shellcheck= -pyflakes= .github/workflows/tools-platform-ci.yml .github/workflows/tools-platform-deploy.yml .github/workflows/tools-live-evaluation.yml
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Test PR planning boundaries
@@ -148,11 +148,11 @@ jobs:
           python -m pytest -q tests/e2e/tools/test_atlassian_adapter_binding.py modules/tools/adapters/tests/test_observation_configuration.py
           ruff check tests/e2e/tools/atlassian_flow_summary.py tests/e2e/tools/test_atlassian_flow_summary.py tests/e2e/tools/atlassian_mutation_observer.py tests/e2e/tools/test_atlassian_mutation_observer.py tests/e2e/tools/test_atlassian_evidence_reader.py
           ruff check tests/e2e/tools/atlassian_setup_live.py tests/e2e/tools/atlassian_setup_binding.py tests/e2e/tools/atlassian_setup_oidc.py tests/e2e/tools/atlassian_setup_recovery.py tests/e2e/tools/atlassian_setup_observer.py tests/e2e/tools/test_atlassian_setup_live.py tests/e2e/tools/test_atlassian_setup_binding.py tests/e2e/tools/test_atlassian_setup_oidc.py tests/e2e/tools/test_atlassian_setup_recovery.py tests/e2e/tools/test_atlassian_setup_observer.py
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.14.6'
           terraform_wrapper: false
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@v6
       - name: Check Terraform formatting and lint
         working-directory: modules/tools/platform/infra
         run: |

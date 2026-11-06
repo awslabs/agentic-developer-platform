@@ -37,7 +37,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.24'
           cache: false
@@ -112,7 +112,7 @@ jobs:
           export EVAL_EXPECTED_ACCOUNT EVAL_CONTEXT_ACCOUNT
           python3 platform/evals/claude-desktop-gateway/context.py "$RUNNER_TEMP/desktop-eval-context/deployment-context.json"
       - name: Upload engine dispatch context
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-eval-claude-desktop-gateway.yml-${{ github.run_attempt }}
           path: ${{ runner.temp }}/desktop-eval-context/deployment-context.json

@@ -85,7 +85,7 @@ jobs:
           git merge-base --is-ancestor 7c59980125ae38e5e5558df8c636547fb64f3242 "$PRODUCT_EXPECTED_REVISION"
       - name: Assume gateway checks identity
         if: inputs.product_cases == '' || inputs.product_cases == 'none'
-        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@1c750b906b46b7806a2363a5e47dcfed92fac918
+        uses: awslabs/agentic-developer-platform/.github/actions/trusted-checks@472fb5e0b9de7420df0038ed48b2a8feca67bf58
         with:
           role_arn: ${{ vars.ADP_CHECKS_ROLE_ARN }}
           region: ${{ vars.ADP_DEPLOY_REGION || 'us-east-1' }}

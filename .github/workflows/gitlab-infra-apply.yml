@@ -114,7 +114,7 @@ jobs:
           customer_aws_label: ${{ inputs.customer_aws_label }}
           customer_user_id: ${{ inputs.customer_user_id }}
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: '1.14.6'
           terraform_wrapper: false

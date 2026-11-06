@@ -65,12 +65,12 @@ jobs:
             [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
             [[ "$ROLLBACK_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: inputs.rollback_to_digest == ''
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: inputs.rollback_to_digest == ''
         with:
           python-version: '3.12'
@@ -113,7 +113,7 @@ jobs:
       ADP_TOOLS_STATE_BUCKET: ${{ vars.ADP_TOOLS_STATE_BUCKET }}
       ADP_TOOLS_FACADE_ROLLBACK_DIGEST: ${{ inputs.rollback_to_digest || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
           persist-credentials: false

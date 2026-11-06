@@ -68,7 +68,7 @@ jobs:
           test "$SELECTED_LABEL" = "$APPROVED_LABEL"
           test -n "$APPROVED_ACCOUNT"
           test "$TARGET_ACCOUNT" = "$APPROVED_ACCOUNT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision }}
           persist-credentials: false
@@ -195,13 +195,13 @@ jobs:
           INPUT_CUSTOMER_USER_ID: ${{ inputs.customer_user_id }}
           INPUT_ENVIRONMENT: ${{ inputs.environment }}
         run: python modules/user-services/dev-box/engine_evidence.py --manifest dev-box-release.json --receipt dev-box-runtime-receipt.json --output engine-artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-dev-box-deploy.yml-${{ github.run_attempt }}
           path: engine-artifacts/context/deployment-context.json
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: adp-release-dev-box-${{ github.run_attempt }}
           path: engine-artifacts/release/release.json

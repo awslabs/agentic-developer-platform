@@ -72,7 +72,7 @@ jobs:
             [[ "$ROLLBACK_TO_VERSION" =~ ^[1-9][0-9]*$ ]]
             test -z "$ADP_CORRELATION$ADP_SOURCE$ADP_DEFINITION"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 0
@@ -95,7 +95,7 @@ jobs:
         env:
           ADP_SOURCE: ${{ inputs.adp_source_revision || '' }}
         run: bash modules/tools/platform/scripts/guard_dispatch.sh source
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.adp_source_revision || github.sha }}
           persist-credentials: false
@@ -118,7 +118,7 @@ jobs:
           git merge-base --is-ancestor "$ADP_SOURCE" "refs/remotes/origin/$DEFAULT_BRANCH"
           git merge-base --is-ancestor "$ADP_DEFINITION" "$GITHUB_SHA"
           git show "$ADP_DEFINITION:.github/workflows/tools-interceptor-deploy.yml" | cmp - .github/workflows/tools-interceptor-deploy.yml
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install local validation dependencies

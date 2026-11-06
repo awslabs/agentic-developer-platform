@@ -59,7 +59,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           git fetch --no-tags origin main
           git merge-base --is-ancestor HEAD FETCH_HEAD
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install selector dependencies without deploying a service

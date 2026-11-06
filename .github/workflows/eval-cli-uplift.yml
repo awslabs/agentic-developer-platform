@@ -569,7 +569,7 @@ jobs:
 
       - name: Publish engine qualification context
         if: inputs.adp_correlation != '' && github.workflow_ref == format('{0}/.github/workflows/eval-cli-uplift.yml@refs/heads/main', github.repository)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: adp-deployment-context-eval-cli-uplift.yml-${{ github.run_attempt }}
           path: /tmp/adp-cli-context/deployment-context.json
@@ -698,7 +698,7 @@ jobs:
 
       - name: Publish engine qualification result
         if: always() && inputs.adp_correlation != '' && github.workflow_ref == format('{0}/.github/workflows/eval-cli-uplift.yml@refs/heads/main', github.repository)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e32-qualification-result
           path: ${{ runner.temp }}/cli-uplift-evidence/report.json

@@ -402,7 +402,7 @@ jobs:
           L5_QUALIFICATION_PREFLIGHT=1 modules/L5-services/scripts/emit-security-qualification.py
           python3 modules/L5-services/tests/live/run_security_live.py \
             preflight "$SOURCE_SHA" "$PRIVATE_FIXTURE" "$PRIVATE_EVIDENCE_DIR"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install native selector dependencies
@@ -531,7 +531,7 @@ jobs:
           python3 modules/L5-services/scripts/qualification-dispatch.py check-console-policy "$L5_SERVICE"
           python3 modules/L5-services/scripts/qualification-dispatch.py check-driver "$L5_SERVICE"
           python3 modules/L5-services/scripts/qualification-dispatch.py prepare "$L5_SERVICE"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Install selected native driver dependencies
